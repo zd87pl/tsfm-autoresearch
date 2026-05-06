@@ -1,0 +1,2 @@
+commit	experiment	cost_asym_loss	mae	p50_latency_ms	status	description
+3194c0f	m3_smoke_test	32.275741	11.040057	6420.5	keep	Single tenant smoke test — outer loop verified
