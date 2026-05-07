@@ -51,10 +51,10 @@ from tsfm_autoresearch.tsfm_client import TSFMClient
 # MODIFY THESE to change what the experiment evaluates.
 
 # Which experiment to run
-CURRENT_EXPERIMENT = "m3_smoke_test"
+CURRENT_EXPERIMENT = "02_fixed_vs_autoresearch"
 
 # Number of tenants to evaluate
-N_TENANTS = 5  # Keep small for smoke test; increase for real runs
+N_TENANTS = DEFAULT_N_TENANTS  # 200 for headline experiment
 
 # Forecast horizon (minutes)
 HORIZON = DEFAULT_HORIZON
@@ -66,10 +66,10 @@ K = DEFAULT_K
 SLA_TIER = SLATier.STANDARD
 
 # Sample timestamps per tenant: how many forecast points to evaluate
-TIMESTAMPS_PER_TENANT = 3  # Keep small for smoke test; use 100 for M6
+TIMESTAMPS_PER_TENANT = 50  # M6 default
 
 # Description for results.tsv
-DESCRIPTION = "Initial baseline: autoresearch vs naive last-value on 5 tenants"
+DESCRIPTION = "M6 headline: fixed-config (ctx=256) vs autoresearch (K=8) on 200 tenants, standard SLA"
 
 
 # ── Experiment Runner ──────────────────────────────────────────────────
@@ -184,6 +184,27 @@ def main() -> None:
 
     if CURRENT_EXPERIMENT == "m3_smoke_test":
         results = run_smoke_test(harness)
+    elif CURRENT_EXPERIMENT == "02_fixed_vs_autoresearch":
+        # M6 headline experiment
+        from baselines.fixed_config import FixedConfigTSFM, find_best_fixed_config
+        from experiments.m6_headline import run_headline_experiment
+
+        results = run_headline_experiment(
+            client=client,
+            n_tenants=N_TENANTS,
+            horizon=HORIZON,
+            timestamps_per_tenant=TIMESTAMPS_PER_TENANT,
+            sla_tier=SLA_TIER,
+            K=K,
+            seed=42,
+        )
+        # run_headline_experiment handles its own logging
+        print(f"\nExperiment completed in {time.perf_counter() - t0:.1f}s")
+        print(f"\n---")
+        for key, value in results.items():
+            if isinstance(value, (float, int, str)):
+                print(f"{str(key):30s}: {value}")
+        return
     else:
         print(f"Unknown experiment: {CURRENT_EXPERIMENT}")
         return

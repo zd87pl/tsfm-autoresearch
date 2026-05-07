@@ -15,7 +15,7 @@ Proof-of-concept empirically validating the thesis:
 | M3: Autoresearch Harness + Loss Functions | ✅ Complete | `m3/autoresearch-harness` |
 | M4: Archetype Store (FAISS) | ✅ Complete | `m4/archetype-store` |
 | M5: Forecast Baselines | ✅ Complete | `m5/baselines` |
-| M6: Headline Experiment | 🔜 Next | — |
+| M6: Headline Experiment | 🚧 In Progress | `m6/headline-experiment` |
 | M7: Latency Budget Sweep | ⏳ Pending | — |
 | M8: Cold-Start Experiment | ⏳ Pending | — |
 | M9: SLA Tier Asymmetry | ⏳ Pending | — |
@@ -79,7 +79,7 @@ tsfm-autoresearch/
 ├── experiments/
 │   ├── 01_workload_characterization.py  ✓
 │   ├── 02_tsfm_wrapper_validation.py    ✓
-│   ├── 02_fixed_vs_autoresearch.py      (M6)
+│   ├── 02_fixed_vs_autoresearch.py      (M6 → m6_headline.py)
 │   ├── 03_latency_budget_sweep.py       (M7)
 │   ├── 04_cold_start_archetype.py       (M8)
 │   └── 05_sla_tier_asymmetry.py         (M9)
@@ -169,6 +169,17 @@ Four baselines conforming to `Forecaster` protocol:
 - **NaiveSeasonal**: 24h seasonal lag (1440 steps at 1-min resolution)
 - **PerTenantARIMA**: ARIMA(1,0,1) per tenant per dimension (slow by design)
 - **FixedConfigTSFM**: TimesFM with grid-searched best context_len (strongest baseline)
+
+### M6: Headline Experiment
+Compares FixedConfigTSFM vs AutoresearchHarness on cost-asymmetric loss across the synthetic tenant fleet. This is the central empirical validation of the thesis.
+
+```bash
+# Run the headline experiment
+uv run python experiments/m6_headline.py --tenants 200 --horizon 60 --timestamps 50
+
+# Or via the outer loop
+uv run python autoresearch_agent/run_experiment.py
+```
 
 ## Tech Stack
 
