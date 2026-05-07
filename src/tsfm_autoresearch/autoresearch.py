@@ -263,16 +263,18 @@ class AutoresearchHarness:
         val_forecasts = self._client.forecast_batch(
             histories=[train_history] * K,
             configs=configs,
-            horizon=val_actuals.shape[0],
+            horizon=min(horizon, val_actuals.shape[0]),
         )
         timing["batch_evaluate"] = (time.perf_counter() - t0) * 1000
 
-        # ── Stage 4: Score with cost-asymmetric loss ───────────────
+        # Stage 4: Score with cost-asymmetric loss ───────────────
         t0 = time.perf_counter()
         loss_fn = make_loss_for_sla(sla_tier)
+        # Truncate val_actuals to match forecast horizon
+        val_slice = val_actuals[:horizon, :]
         scored: list[ConfigScore] = []
         for i, forecast in enumerate(val_forecasts):
-            score = loss_fn.score(val_actuals, forecast)
+            score = loss_fn.score(val_slice, forecast)
             scored.append(ConfigScore(config=configs[i], score=score, forecast=forecast))
         timing["score_configs"] = (time.perf_counter() - t0) * 1000
 
