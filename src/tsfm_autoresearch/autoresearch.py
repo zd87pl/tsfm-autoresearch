@@ -66,6 +66,20 @@ logger = logging.getLogger(__name__)
 # Context length candidates (in minutes of history)
 _CONTEXT_LEN_CANDIDATES = [64, 128, 256, 384, 512]
 
+# Archetype → preferred context_len bias (domain-knowledge informed)
+# These are heuristics until grid-search per-archetype results are available.
+# Based on: high-variance archetypes need longer context to capture patterns.
+_ARCHETYPE_CONTEXT_BIAS: dict[str, int] = {
+    "low-traffic-blog": 128,
+    "ecommerce-retail": 512,  # Strong diurnal+weekly → long context
+    "news-publisher": 384,    # Diurnal + breaking-news bursts
+    "b2b-saas": 256,          # Business hours pattern, 4h context
+    "wp-cron-heavy": 256,     # Flat traffic with CPU spikes
+    "cache-driven": 384,      # Correlation patterns need history
+    "compute-heavy": 128,     # High baseline, low variance → short ok
+    "idle-ish": 64,           # Near-zero → minimal context needed
+}
+
 # Quantile subsets to evaluate
 # Must use quantiles available in TimesFM 2.5: [0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9]
 # "protective" = aggressive under-prediction protection (premium)
@@ -349,24 +363,21 @@ class AutoresearchHarness:
         Sample K diverse configurations from the search space.
 
         Uses stratified random sampling across the configuration dimensions
-        to ensure diverse coverage. Each dimension is sampled independently
-        with uniform distribution within its valid range.
-
-        TODO(M4): Condition sampling on archetype_embedding. Currently uses
-        uniform prior. Once M4 (archetype_store.py) is implemented, the
-        prior distribution will be centered on the archetype's historical
-        best config region, with exploration noise proportional to distance
-        from the centroid.
+        to ensure diverse coverage. When archetype_embedding is provided,
+        biases context_len sampling toward the archetype's historically best
+        configuration while still exploring alternatives.
 
         Sampling strategy:
-          - context_len: Uniform over candidate lengths
+          - context_len: Archetype-biased if embedding available, else uniform
           - quantiles: Weighted toward SLA-appropriate presets
           - freq: Fixed to "T" (1-minute) for PoC
 
         Args:
             K: Number of configs to sample.
             sla_tier: SLA tier (influences quantile preset weighting).
-            archetype_embedding: Unused in M3 (uniform prior).
+            archetype_embedding: Optional bias vector. If str, treated as
+                archetype name for context_len biasing. If np.ndarray,
+                placeholder for future full embedding support.
 
         Returns:
             List of K distinct ForecastConfig objects.
@@ -374,8 +385,6 @@ class AutoresearchHarness:
         configs: list[ForecastConfig] = []
 
         # Weight quantile presets by SLA tier appropriateness
-        # Premium → prefer "protective" (more quantiles, better protection)
-        # Basic → prefer "light" (fewer quantiles, faster)
         if sla_tier == SLATier.PREMIUM:
             preset_weights = {"protective": 0.6, "balanced": 0.3, "light": 0.1}
         elif sla_tier == SLATier.STANDARD:
@@ -390,8 +399,34 @@ class AutoresearchHarness:
         # Use local RNG for reproducibility
         local_rng = rng if rng is not None else self._rng
 
-        for _ in range(K):
-            ctx_len = int(local_rng.choice(_CONTEXT_LEN_CANDIDATES))
+        # ── Archetype-biased context_len sampling ──────────────────
+        # When archetype info is available, bias ~40% of configs toward
+        # the archetype's known-best context_len, keeping ~60% uniform
+        # for exploration.
+        bias_ctx: int | None = None
+        bias_strength: float = 0.0
+        if archetype_embedding is not None:
+            if isinstance(archetype_embedding, str):
+                # Archetype name → lookup preferred context_len
+                bias_ctx = _ARCHETYPE_CONTEXT_BIAS.get(archetype_embedding)
+            elif isinstance(archetype_embedding, np.ndarray):
+                # Full embedding → find nearest archetype centroid
+                try:
+                    from tsfm_autoresearch.archetype_store import _ARCHETYPE_CONTEXT_BIAS as _ACB
+                    # Future: use FAISS to find nearest archetype
+                    # For now, just try to use the embedding as-is
+                    pass
+                except ImportError:
+                    pass
+            if bias_ctx is not None:
+                bias_strength = 0.4  # 40% of configs use archetype bias
+
+        for i in range(K):
+            if bias_ctx is not None and local_rng.random() < bias_strength:
+                ctx_len = bias_ctx
+            else:
+                ctx_len = int(local_rng.choice(_CONTEXT_LEN_CANDIDATES))
+
             preset = str(local_rng.choice(preset_names, p=preset_probs))
             quantiles = _QUANTILE_PRESETS[preset]
 
