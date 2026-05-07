@@ -176,12 +176,12 @@ else
         fail "Tests failed — check output above"
     fi
 
-    # Count test modules
+    # Count test modules (portable: works on both GNU and BSD grep)
     N_TESTS=$(uv run pytest tests/ \
         --ignore=tests/test_autoresearch.py \
         --ignore=tests/test_tsfm_client.py \
-        --collect-only -q 2>&1 | tail -1 | grep -oP '\d+(?= tests)')
-    success "Test count: ${N_TESTS:-?} tests"
+        --collect-only -q 2>&1 | tail -1 | grep -o '[0-9]* passed' | grep -o '[0-9]*')
+    success "Test count: ${N_TESTS:-?} passed"
 fi
 
 # ── 7. Experiment (optional) ──────────────────────────────────────────

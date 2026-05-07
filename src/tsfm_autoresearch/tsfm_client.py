@@ -179,7 +179,7 @@ class TSFMClient:
     def __init__(
         self,
         model_id: str = "google/timesfm-2.5-200m-pytorch",
-        device: str = "auto",  # Reserved: TimesFM auto-detects; kept for API compatibility
+        device: str = "auto",
         max_context: int = 2048,
         max_horizon: int = 256,
         per_core_batch_size: int = 1,
@@ -190,18 +190,38 @@ class TSFMClient:
 
         Args:
             model_id: HuggingFace model ID.
-            device: "auto", "cpu", or "cuda". "auto" uses GPU if available.
+            device: "auto" (CUDA > MPS > CPU), "cpu", "cuda", or "mps".
             max_context: Maximum context length for batching (compile-time).
-                Must be ≥ any per-request context_len.
             max_horizon: Maximum forecast horizon (compile-time).
-                Must be ≥ any per-request horizon.
             per_core_batch_size: Batch size per core. Set higher for GPU.
             torch_compile: Whether to use torch.compile() for speed.
+                Disable on Apple Silicon (MPS doesn't support torch.compile).
         """
+        import torch
+
         self._model_id = model_id
         self._max_context = max_context
         self._max_horizon = max_horizon
         self._per_core_batch_size = per_core_batch_size
+
+        # ── Device detection ───────────────────────────────────────
+        if device == "auto":
+            if torch.cuda.is_available():
+                self._device = torch.device("cuda")
+            elif torch.backends.mps.is_available():
+                self._device = torch.device("mps")
+                torch_compile = False  # MPS doesn't support compile
+                logger.info("Apple Silicon MPS detected — torch.compile disabled")
+            else:
+                self._device = torch.device("cpu")
+        else:
+            self._device = torch.device(device)
+
+        logger.info(f"Device: {self._device}")
+
+        # TimesFM model tensors will be created on the default device
+        # if we set it before loading. This works for both CUDA and MPS.
+        torch.set_default_device(self._device)
 
         logger.info(f"Loading TimesFM 2.5 from {model_id}...")
         t0 = time.perf_counter()
@@ -237,6 +257,9 @@ class TSFMClient:
         self._model.compile(compile_config)
         load_time = time.perf_counter() - t0
         logger.info(f"TimesFM 2.5 loaded and compiled in {load_time:.1f}s")
+
+        # Reset default device to avoid side effects
+        torch.set_default_device(torch.device("cpu"))
 
     # ── Public API ─────────────────────────────────────────────────
 
