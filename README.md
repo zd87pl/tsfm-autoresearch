@@ -17,11 +17,12 @@ Proof-of-concept empirically validating the thesis:
 | M5: Forecast Baselines | ✅ Complete | (merged) |
 | M6: Headline Experiment | ✅ Complete | (merged) |
 | M7: Latency Budget Sweep | ✅ Complete | (merged) |
-| M8: Cold-Start Experiment | 🚧 In Progress | `m8/cold-start` |
-| M9: SLA Tier Asymmetry | 🔜 Next | — |
-| M10: GCP Scale-Out | ⏳ Pending | — |
+| M8: Cold-Start Experiment | ✅ Complete | (merged) |
+| M9: SLA Tier Asymmetry | ✅ Complete | (merged) |
+| M10: GCP Scale-Out | ✅ Complete | (merged) |
 
-**Tests:** 102 pass, 1 skip (non-TimesFM fast suite)
+**Tests:** 116 pass, 1 skip (non-TimesFM fast suite)
+**Setup:** `bash setup.sh` — zero to results in one command
 
 ## Architecture
 
@@ -108,6 +109,10 @@ tsfm-autoresearch/
 ## Quick Start
 
 ```bash
+# One-command setup (recommended)
+bash setup.sh
+
+# Or manual:
 # Install Python 3.12 + uv
 uv python install 3.12
 
@@ -195,6 +200,21 @@ Tests archetype retrieval from minimal history (30-480 min) to close the gap bet
 
 ```bash
 uv run python experiments/m8_cold_start.py --tenants 50 --lengths 30,60,120,240,480
+```
+
+### M9: SLA Tier Asymmetry
+Validates that different α values (premium=0.90, standard=0.75, basic=0.65) produce measurably different forecast behavior — premium forecasts are systematically higher (protective) than basic ones (cost-efficient). Confirms monotonicity: premium > standard > basic.
+
+```bash
+uv run python experiments/m9_sla_asymmetry.py --tenants 100
+```
+
+### M10: GCP Scale-Out
+Production deployment scaffold: Dockerfile for Cloud Run, FastAPI forecast service with `/forecast` and `/health` endpoints, Cloud Build pipeline. Qdrant migration path documented for horizontal scaling.
+
+```bash
+gcloud builds submit --tag gcr.io/PROJECT/tsfm-autoresearch -f deploy/docker/Dockerfile
+gcloud run deploy tsfm-autoresearch --image gcr.io/PROJECT/tsfm-autoresearch --gpu 1
 ```
 
 ## Tech Stack
