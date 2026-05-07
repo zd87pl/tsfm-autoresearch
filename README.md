@@ -10,18 +10,18 @@ Proof-of-concept empirically validating the thesis:
 
 | Milestone | Status | Branch |
 |-----------|--------|--------|
-| M1: Synthetic Workload Generator | ✅ Complete | `m1/workload-gen` |
-| M2: Frozen TimesFM Wrapper | ✅ Complete | `m2/tsfm-wrapper` |
-| M3: Autoresearch Harness + Loss Functions | ✅ Complete | `m3/autoresearch-harness` |
-| M4: Archetype Store (FAISS) | ✅ Complete | `m4/archetype-store` |
-| M5: Forecast Baselines | ✅ Complete | `m5/baselines` |
-| M6: Headline Experiment | 🚧 In Progress | `m6/headline-experiment` |
-| M7: Latency Budget Sweep | 🚧 In Progress | `m7/latency-sweep` |
+| M1: Synthetic Workload Generator | ✅ Complete | (merged) |
+| M2: Frozen TimesFM Wrapper | ✅ Complete | (merged) |
+| M3: Autoresearch Harness + Loss Functions | ✅ Complete | (merged) |
+| M4: Archetype Store (FAISS) | ✅ Complete | (merged) |
+| M5: Forecast Baselines | ✅ Complete | (merged) |
+| M6: Headline Experiment | ✅ Complete | (merged) |
+| M7: Latency Budget Sweep | ✅ Complete | (merged) |
 | M8: Cold-Start Experiment | 🚧 In Progress | `m8/cold-start` |
-| M9: SLA Tier Asymmetry | ⏳ Pending | — |
+| M9: SLA Tier Asymmetry | 🔜 Next | — |
 | M10: GCP Scale-Out | ⏳ Pending | — |
 
-**Tests:** 111 total (109 pass, 1 skip, 1 cold-start baseline)
+**Tests:** 102 pass, 1 skip (non-TimesFM fast suite)
 
 ## Architecture
 
@@ -71,20 +71,21 @@ tsfm-autoresearch/
 │   │   ├── losses.py                 # M3: Cost-asymmetric loss ✓
 │   │   └── archetype_store.py        # M4: FAISS archetype store ✓
 │   └── baselines/
-│       ├── protocol.py               # Forecaster protocol
+│       ├── protocol.py               # M5: Forecaster protocol
 │       ├── naive_last.py             # M5: Last-value baseline ✓
 │       ├── naive_seasonal.py         # M5: Seasonal baseline ✓
 │       ├── fixed_config.py           # M5: Fixed TimesFM baseline ✓
 │       └── per_tenant_arima.py       # M5: Per-tenant ARIMA ✓
+├── references/
+│   └── mlx-port/                     # Original karpathy/autoresearch-mlx files
 ├── experiments/
 │   ├── 01_workload_characterization.py  ✓
 │   ├── 02_tsfm_wrapper_validation.py    ✓
-│   ├── m6_headline.py                   (M6 — headline experiment)
-│   ├── m7_latency_sweep.py              (M7 — latency budget sweep)
-│   ├── m8_cold_start.py                 (M8 — cold-start archetype)
-│   ├── 04_cold_start_archetype.py       (M8)
-│   └── 05_sla_tier_asymmetry.py         (M9)
-├── notebooks/
+│   ├── m6_headline.py                   ✓ (M6)
+│   ├── m7_latency_sweep.py              ✓ (M7)
+│   ├── m8_cold_start.py                 ✓ (M8)
+│   ├── 09_sla_tier_asymmetry.py         (M9)
+│   └── 10_gcp_scale_out.py              (M10)
 ├── data/
 │   ├── synthetic/                    # Generated workloads (gitignored)
 │   └── boom/                         # Datadog BOOM benchmark
@@ -98,7 +99,10 @@ tsfm-autoresearch/
     ├── test_losses.py                ✓
     ├── test_autoresearch.py          ✓
     ├── test_archetype_store.py       ✓
-    └── test_baselines.py             ✓
+    ├── test_baselines.py             ✓
+    ├── test_headline_experiment.py   ✓ (M6)
+    ├── test_latency_sweep.py         ✓ (M7)
+    └── test_cold_start.py            ✓ (M8)
 ```
 
 ## Quick Start
@@ -110,7 +114,7 @@ uv python install 3.12
 # Clone and set up
 git clone https://github.com/zd87pl/tsfm-autoresearch.git
 cd tsfm-autoresearch
-uv sync
+uv sync --extra dev
 
 # Install TimesFM (from source, not PyPI)
 git clone https://github.com/google-research/timesfm.git /tmp/timesfm
@@ -175,11 +179,8 @@ Four baselines conforming to `Forecaster` protocol:
 Compares FixedConfigTSFM vs AutoresearchHarness on cost-asymmetric loss across the synthetic tenant fleet. This is the central empirical validation of the thesis.
 
 ```bash
-# Run the headline experiment
 uv run python experiments/m6_headline.py --tenants 200 --horizon 60 --timestamps 50
-
-# Or via the outer loop
-uv run python autoresearch_agent/run_experiment.py
+uv run python autoresearch_agent/run_experiment.py  # via outer loop
 ```
 
 ### M7: Latency Budget Sweep
