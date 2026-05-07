@@ -16,7 +16,7 @@ Proof-of-concept empirically validating the thesis:
 | M4: Archetype Store (FAISS) | ✅ Complete | `m4/archetype-store` |
 | M5: Forecast Baselines | ✅ Complete | `m5/baselines` |
 | M6: Headline Experiment | 🚧 In Progress | `m6/headline-experiment` |
-| M7: Latency Budget Sweep | ⏳ Pending | — |
+| M7: Latency Budget Sweep | 🚧 In Progress | `m7/latency-sweep` |
 | M8: Cold-Start Experiment | ⏳ Pending | — |
 | M9: SLA Tier Asymmetry | ⏳ Pending | — |
 | M10: GCP Scale-Out | ⏳ Pending | — |
@@ -79,8 +79,8 @@ tsfm-autoresearch/
 ├── experiments/
 │   ├── 01_workload_characterization.py  ✓
 │   ├── 02_tsfm_wrapper_validation.py    ✓
-│   ├── 02_fixed_vs_autoresearch.py      (M6 → m6_headline.py)
-│   ├── 03_latency_budget_sweep.py       (M7)
+│   ├── m6_headline.py                   (M6 — headline experiment)
+│   ├── m7_latency_sweep.py              (M7 — latency budget sweep)
 │   ├── 04_cold_start_archetype.py       (M8)
 │   └── 05_sla_tier_asymmetry.py         (M9)
 ├── notebooks/
@@ -179,6 +179,13 @@ uv run python experiments/m6_headline.py --tenants 200 --horizon 60 --timestamps
 
 # Or via the outer loop
 uv run python autoresearch_agent/run_experiment.py
+```
+
+### M7: Latency Budget Sweep
+Sweeps K ∈ {1, 2, 4, 8, 16, 32} to measure the latency/loss trade-off curve and validate the 200ms budget claim.
+
+```bash
+uv run python experiments/m7_latency_sweep.py --tenants 50 --timestamps 5
 ```
 
 ## Tech Stack

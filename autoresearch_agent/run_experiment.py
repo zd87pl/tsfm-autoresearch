@@ -205,6 +205,20 @@ def main() -> None:
             if isinstance(value, (float, int, str)):
                 print(f"{str(key):30s}: {value}")
         return
+    elif CURRENT_EXPERIMENT == "03_latency_budget_sweep":
+        # M7 latency sweep
+        from experiments.m7_latency_sweep import run_latency_sweep
+
+        results = run_latency_sweep(
+            client=client,
+            n_tenants=N_TENANTS,
+            horizon=HORIZON,
+            timestamps_per_tenant=TIMESTAMPS_PER_TENANT,
+            sla_tier=SLA_TIER,
+            seed=42,
+        )
+        print(f"\nExperiment completed in {time.perf_counter() - t0:.1f}s")
+        return
     else:
         print(f"Unknown experiment: {CURRENT_EXPERIMENT}")
         return
