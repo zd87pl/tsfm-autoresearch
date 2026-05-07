@@ -27,6 +27,8 @@ from pathlib import Path
 
 import numpy as np
 
+from scipy.stats import binomtest
+
 from baselines.fixed_config import FixedConfigTSFM
 from baselines.naive_last import NaiveLast
 from baselines.naive_seasonal import NaiveSeasonal
@@ -61,35 +63,60 @@ MIN_HISTORY = 200
 # ── Experiment Runner ──────────────────────────────────────────────────
 
 
-def evaluate_forecaster(
-    forecaster: Forecaster,
+def _run_single_forecaster(
+    forecaster, tid: str, hist_slice: np.ndarray, horizon: int,
+    sla_tier: SLATier, K: int,
+):
+    """Dispatch to the right API; return (forecast, latency_ms) or None on failure."""
+    try:
+        if isinstance(forecaster, AutoresearchHarness):
+            response = forecaster.forecast(
+                tenant_id=tid, history=hist_slice, horizon=horizon,
+                sla_tier=sla_tier, K=K,
+            )
+            return response.final_forecast.point, response.total_latency_ms
+        else:
+            t0 = time.perf_counter()
+            forecast = forecaster.forecast(hist_slice, horizon)
+            return forecast, (time.perf_counter() - t0) * 1000
+    except Exception as e:
+        from logging import getLogger
+        getLogger(__name__).warning(
+            "Forecaster %s failed on %s: %s",
+            type(forecaster).__name__, tid, e,
+        )
+        return None
+
+
+def evaluate_paired(
+    forecasters: dict,
     tenant_ids: list[str],
     horizon: int,
     timestamps_per_tenant: int,
     sla_tier: SLATier,
+    K: int,
     seed: int = 42,
-) -> tuple[list[float], list[float], list[float]]:
+) -> dict[str, dict]:
     """
-    Evaluate a forecaster across multiple tenants and timestamps.
-
-    Returns:
-        (losses, maes, latencies_ms) — one value per forecast evaluation.
+    Paired evaluation: every forecaster scored at the same (tenant, t) pairs.
+    If any forecaster fails on a pair, the pair is dropped for ALL forecasters,
+    so per-index lists stay aligned and downstream paired tests are valid.
     """
     rng = np.random.default_rng(seed)
-    losses: list[float] = []
-    maes: list[float] = []
-    latencies: list[float] = []
-
     loss_fn = CostAsymmetricLoss(alpha=sla_tier.alpha, per_resource=True)
+
+    out: dict[str, dict] = {
+        name: {"losses": [], "maes": [], "latencies": []}
+        for name in forecasters
+    }
+    pairs: list[tuple[str, int]] = []
 
     for tid in tenant_ids:
         history = load_tenant_data(tid)
         T = history.shape[0]
-
         if T <= MIN_HISTORY + horizon:
             continue
 
-        # Pick random evaluation timestamps
         eval_candidates = np.arange(MIN_HISTORY, T - horizon)
         if len(eval_candidates) == 0:
             continue
@@ -101,31 +128,44 @@ def evaluate_forecaster(
         for t in eval_points:
             hist_slice = history[:t, :]
             actuals = history[t : t + horizon, :]
-
             if actuals.shape[0] < horizon:
                 continue
 
-            try:
-                t0 = time.perf_counter()
-                forecast = forecaster.forecast(hist_slice, horizon)
-                elapsed = (time.perf_counter() - t0) * 1000
-
-                loss = loss_fn.point_loss(actuals, forecast)
-                mae = evaluate_mae(actuals, forecast)
-
-                losses.append(loss)
-                maes.append(mae)
-                latencies.append(elapsed)
-            except Exception as e:
-                # Log and skip
-                from logging import getLogger
-                getLogger(__name__).warning(
-                    "Forecaster %s failed on %s @ t=%d: %s",
-                    type(forecaster).__name__, tid, t, e,
-                )
+            results = {}
+            ok = True
+            for name, fc in forecasters.items():
+                res = _run_single_forecaster(fc, tid, hist_slice, horizon, sla_tier, K)
+                if res is None:
+                    ok = False
+                    break
+                results[name] = res
+            if not ok:
                 continue
 
-    return losses, maes, latencies
+            pairs.append((tid, int(t)))
+            for name, (forecast, elapsed) in results.items():
+                out[name]["losses"].append(loss_fn.point_loss(actuals, forecast))
+                out[name]["maes"].append(evaluate_mae(actuals, forecast))
+                out[name]["latencies"].append(elapsed)
+
+    return {"pairs": pairs, **out}
+
+
+def evaluate_forecaster(
+    forecaster: Forecaster,
+    tenant_ids: list[str],
+    horizon: int,
+    timestamps_per_tenant: int,
+    sla_tier: SLATier,
+    seed: int = 42,
+) -> tuple[list[float], list[float], list[float]]:
+    """Single-forecaster wrapper retained for naive baseline calls."""
+    paired = evaluate_paired(
+        {"_": forecaster}, tenant_ids, horizon, timestamps_per_tenant,
+        sla_tier, K=1, seed=seed,
+    )
+    d = paired["_"]
+    return d["losses"], d["maes"], d["latencies"]
 
 
 def evaluate_autoresearch(
@@ -137,66 +177,13 @@ def evaluate_autoresearch(
     K: int,
     seed: int = 42,
 ) -> tuple[list[float], list[float], list[float]]:
-    """
-    Evaluate the autoresearch harness (different API from Forecaster protocol).
-
-    Returns:
-        (losses, maes, latencies_ms).
-    """
-    rng = np.random.default_rng(seed)
-    losses: list[float] = []
-    maes: list[float] = []
-    latencies: list[float] = []
-
-    loss_fn = CostAsymmetricLoss(alpha=sla_tier.alpha, per_resource=True)
-
-    for tid in tenant_ids:
-        history = load_tenant_data(tid)
-        T = history.shape[0]
-
-        if T <= MIN_HISTORY + horizon:
-            continue
-
-        eval_candidates = np.arange(MIN_HISTORY, T - horizon)
-        if len(eval_candidates) == 0:
-            continue
-
-        n_pts = min(timestamps_per_tenant, len(eval_candidates))
-        eval_points = rng.choice(eval_candidates, size=n_pts, replace=False)
-        eval_points.sort()
-
-        for t in eval_points:
-            hist_slice = history[:t, :]
-            actuals = history[t : t + horizon, :]
-
-            if actuals.shape[0] < horizon:
-                continue
-
-            try:
-                response = harness.forecast(
-                    tenant_id=tid,
-                    history=hist_slice,
-                    horizon=horizon,
-                    sla_tier=sla_tier,
-                    K=K,
-                )
-                forecast = response.final_forecast.point
-                elapsed = response.total_latency_ms
-
-                loss = loss_fn.point_loss(actuals, forecast)
-                mae = evaluate_mae(actuals, forecast)
-
-                losses.append(loss)
-                maes.append(mae)
-                latencies.append(elapsed)
-            except Exception as e:
-                from logging import getLogger
-                getLogger(__name__).warning(
-                    "Autoresearch failed on %s @ t=%d: %s", tid, t, e,
-                )
-                continue
-
-    return losses, maes, latencies
+    """Single-forecaster wrapper retained for backwards compatibility."""
+    paired = evaluate_paired(
+        {"_": harness}, tenant_ids, horizon, timestamps_per_tenant,
+        sla_tier, K=K, seed=seed,
+    )
+    d = paired["_"]
+    return d["losses"], d["maes"], d["latencies"]
 
 
 def per_archetype_breakdown(
@@ -270,16 +257,45 @@ def per_archetype_breakdown(
 def compute_win_rate(
     ar_losses: list[float],
     baseline_losses: list[float],
-) -> float:
+) -> dict:
     """
-    Fraction of evaluation points where autoresearch beats the baseline.
-    win_rate = count(ar_loss < baseline_loss) / min(len(ar_losses), len(baseline_losses))
+    Paired win-rate with a two-sided binomial significance test.
+
+    Caller must guarantee `ar_losses[i]` and `baseline_losses[i]` come from
+    the SAME (tenant, timestamp) pair (use `evaluate_paired` for this).
+    Excludes ties from the binomial denominator (sign-test convention).
     """
-    n = min(len(ar_losses), len(baseline_losses))
-    if n == 0:
-        return 0.0
-    wins = sum(1 for a, b in zip(ar_losses[:n], baseline_losses[:n]) if a < b)
-    return wins / n
+    if len(ar_losses) != len(baseline_losses):
+        raise ValueError(
+            f"Paired losses must have equal length: "
+            f"{len(ar_losses)} vs {len(baseline_losses)}"
+        )
+    n_total = len(ar_losses)
+    if n_total == 0:
+        return {"win_rate": 0.0, "n": 0, "wins": 0, "losses": 0,
+                "ties": 0, "p_value": 1.0, "ci_low": 0.0, "ci_high": 1.0}
+
+    wins = sum(1 for a, b in zip(ar_losses, baseline_losses) if a < b)
+    losses_n = sum(1 for a, b in zip(ar_losses, baseline_losses) if a > b)
+    ties = n_total - wins - losses_n
+    decided = wins + losses_n
+
+    if decided == 0:
+        return {"win_rate": 0.5, "n": n_total, "wins": 0, "losses": 0,
+                "ties": ties, "p_value": 1.0, "ci_low": 0.0, "ci_high": 1.0}
+
+    test = binomtest(wins, decided, p=0.5, alternative="two-sided")
+    ci = test.proportion_ci(confidence_level=0.95)
+    return {
+        "win_rate": wins / decided,
+        "n": n_total,
+        "wins": wins,
+        "losses": losses_n,
+        "ties": ties,
+        "p_value": float(test.pvalue),
+        "ci_low": float(ci.low),
+        "ci_high": float(ci.high),
+    }
 
 
 def run_headline_experiment(
@@ -308,23 +324,24 @@ def run_headline_experiment(
     manifest = load_manifest()
     tenant_ids = sample_tenants(n_tenants, seed=seed)
 
-    # Build forecasters
-    # FixedConfigTSFM: grid search for best context_len
-    print("Grid search for best fixed config...")
+    # Build forecasters. Grid-search the FixedConfig baseline on a tenant
+    # set DISJOINT from the evaluation set so the baseline is not tuned on
+    # the same data it is later scored on.
+    print("Grid search for best fixed config (held-out tenant split)...")
     t0 = time.perf_counter()
     best_config = ForecastConfig(context_len=256)  # Default; grid search requires data
 
-    # Try to load cached grid search result, fall back to default
     try:
         from baselines.fixed_config import find_best_fixed_config
         best_config = find_best_fixed_config(
             client, n_tenants=min(20, n_tenants), horizon=horizon,
-            sla_tier=sla_tier, seed=seed,
+            sla_tier=sla_tier, seed=seed + 1,
+            exclude_tenant_ids=tenant_ids,
         )
-    except Exception:
+    except Exception as e:
         # Grid search may fail if data dir doesn't exist or TimesFM unavailable
         best_config = ForecastConfig(context_len=256)
-        print("  Grid search skipped (data/TimesFM unavailable), using context_len=256")
+        print(f"  Grid search skipped ({type(e).__name__}: {e}), using context_len=256")
 
     fixed_tsfm = FixedConfigTSFM(client, best_config)
     harness = AutoresearchHarness(client, default_K=K, seed=seed)
@@ -364,38 +381,49 @@ def run_headline_experiment(
     print(f"  Time: {time.perf_counter() - t0:.1f}s\n")
     results["seasonal_loss"] = float(np.mean(seas_losses)) if seas_losses else float("inf")
 
-    # ── FixedConfigTSFM ──────────────────────────────────────────────
-    print("Evaluating FixedConfigTSFM...")
+    # ── Headline pair: FixedConfigTSFM vs AutoresearchHarness ────────
+    # Paired so wins/losses are computed on the same (tenant, t) pairs.
+    print("Evaluating FixedConfigTSFM and AutoresearchHarness (paired)...")
     t0 = time.perf_counter()
-    fixed_losses, fixed_maes, fixed_lats = evaluate_forecaster(
-        fixed_tsfm, tenant_ids, horizon, timestamps_per_tenant, sla_tier, seed,
+    paired = evaluate_paired(
+        {"fixed": fixed_tsfm, "ar": harness},
+        tenant_ids, horizon, timestamps_per_tenant, sla_tier, K, seed,
     )
-    print(f"  Loss:    {np.mean(fixed_losses):.6f} ± {np.std(fixed_losses):.6f}")
-    print(f"  MAE:     {np.mean(fixed_maes):.6f}")
-    print(f"  Latency: p50={np.median(fixed_lats):.0f}ms p95={np.percentile(fixed_lats, 95):.0f}ms")
-    print(f"  N:       {len(fixed_losses)} evaluations")
-    print(f"  Time:    {time.perf_counter() - t0:.1f}s\n")
+    fixed_losses = paired["fixed"]["losses"]
+    fixed_maes = paired["fixed"]["maes"]
+    fixed_lats = paired["fixed"]["latencies"]
+    ar_losses = paired["ar"]["losses"]
+    ar_maes = paired["ar"]["maes"]
+    ar_lats = paired["ar"]["latencies"]
+    n_paired = len(paired["pairs"])
+    print(f"  Paired evaluations: {n_paired}")
+    print(f"  FixedConfigTSFM:")
+    print(f"    Loss:    {np.mean(fixed_losses):.6f} ± {np.std(fixed_losses):.6f}")
+    print(f"    MAE:     {np.mean(fixed_maes):.6f}")
+    print(f"    Latency: p50={np.median(fixed_lats):.0f}ms p95={np.percentile(fixed_lats, 95):.0f}ms")
+    print(f"  AutoresearchHarness:")
+    print(f"    Loss:    {np.mean(ar_losses):.6f} ± {np.std(ar_losses):.6f}")
+    print(f"    MAE:     {np.mean(ar_maes):.6f}")
+    print(f"    Latency: p50={np.median(ar_lats):.0f}ms p95={np.percentile(ar_lats, 95):.0f}ms")
+    print(f"  Time: {time.perf_counter() - t0:.1f}s\n")
+    results["n_paired"] = n_paired
     results["fixed_loss"] = float(np.mean(fixed_losses)) if fixed_losses else float("inf")
     results["fixed_p50_latency_ms"] = float(np.median(fixed_lats)) if fixed_lats else 0.0
-
-    # ── Autoresearch Harness ─────────────────────────────────────────
-    print("Evaluating AutoresearchHarness...")
-    t0 = time.perf_counter()
-    ar_losses, ar_maes, ar_lats = evaluate_autoresearch(
-        harness, tenant_ids, horizon, timestamps_per_tenant, sla_tier, K, seed,
-    )
-    print(f"  Loss:    {np.mean(ar_losses):.6f} ± {np.std(ar_losses):.6f}")
-    print(f"  MAE:     {np.mean(ar_maes):.6f}")
-    print(f"  Latency: p50={np.median(ar_lats):.0f}ms p95={np.percentile(ar_lats, 95):.0f}ms")
-    print(f"  N:       {len(ar_losses)} evaluations")
-    print(f"  Time:    {time.perf_counter() - t0:.1f}s\n")
     results["autoresearch_loss"] = float(np.mean(ar_losses)) if ar_losses else float("inf")
     results["autoresearch_p50_latency_ms"] = float(np.median(ar_lats)) if ar_lats else 0.0
 
-    # ── Win Rate ─────────────────────────────────────────────────────
-    win_rate = compute_win_rate(ar_losses, fixed_losses)
-    print(f"Win rate (autoresearch beats fixed-config): {win_rate:.2%}")
-    results["win_rate"] = win_rate
+    # ── Win Rate (paired binomial test) ──────────────────────────────
+    wr = compute_win_rate(ar_losses, fixed_losses)
+    print(
+        f"Win rate (autoresearch beats fixed-config): "
+        f"{wr['win_rate']:.2%} "
+        f"[{wr['ci_low']:.2%}, {wr['ci_high']:.2%}]  "
+        f"wins={wr['wins']} losses={wr['losses']} ties={wr['ties']}  "
+        f"p={wr['p_value']:.4g}"
+    )
+    win_rate = wr["win_rate"]
+    results["win_rate"] = wr["win_rate"]
+    results["win_rate_stats"] = wr
 
     # ── Per-Archetype Breakdown ──────────────────────────────────────
     print("\nPer-Archetype Breakdown (cost-asymmetric loss, lower is better):")
@@ -439,7 +467,9 @@ def run_headline_experiment(
         else 0.0
     )
     print(f"  Improvement:           {improvement:+.1f}%")
-    print(f"  Win Rate:              {win_rate:.2%}")
+    print(f"  Win Rate:              {win_rate:.2%}  "
+          f"95% CI [{wr['ci_low']:.2%}, {wr['ci_high']:.2%}]  "
+          f"p={wr['p_value']:.4g}  n={wr['wins']+wr['losses']}")
     print(f"  Fixed p50 Latency:     {results['fixed_p50_latency_ms']:.0f}ms")
     print(f"  AR p50 Latency:        {results['autoresearch_p50_latency_ms']:.0f}ms")
     print(f"{'='*70}")

@@ -43,7 +43,7 @@ SLA_DISTRIBUTION = {"premium": 0.2, "standard": 0.5, "basic": 0.3}
 # Results tracking
 RESULTS_PATH = Path("autoresearch_agent/results.tsv")
 RESULTS_COLUMNS = [
-    "commit", "experiment", "cost_asym_loss", "mae",
+    "timestamp", "commit", "experiment", "cost_asym_loss", "mae",
     "p50_latency_ms", "status", "description",
 ]
 
@@ -185,6 +185,7 @@ def log_result(
         description: What this experiment tried.
     """
     import subprocess
+    from datetime import datetime, timezone
 
     # Get current commit hash
     try:
@@ -197,9 +198,12 @@ def log_result(
 
     init_results_tsv()
 
+    timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
+
     with open(RESULTS_PATH, "a", newline="") as f:
         writer = csv.writer(f, delimiter="\t")
         writer.writerow([
+            timestamp,
             commit,
             experiment,
             f"{cost_asym_loss:.6f}",
