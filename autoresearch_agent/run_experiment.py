@@ -219,6 +219,20 @@ def main() -> None:
         )
         print(f"\nExperiment completed in {time.perf_counter() - t0:.1f}s")
         return
+    elif CURRENT_EXPERIMENT == "08_cold_start_archetype":
+        # M8 cold-start experiment
+        from experiments.m8_cold_start import run_cold_start_experiment
+
+        results = run_cold_start_experiment(
+            client=client,
+            n_tenants=N_TENANTS,
+            horizon=HORIZON,
+            history_lengths=[30, 60, 120, 240, 480],
+            sla_tier=SLA_TIER,
+            seed=42,
+        )
+        print(f"\nExperiment completed in {time.perf_counter() - t0:.1f}s")
+        return
     else:
         print(f"Unknown experiment: {CURRENT_EXPERIMENT}")
         return

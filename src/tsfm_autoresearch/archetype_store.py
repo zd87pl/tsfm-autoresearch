@@ -48,6 +48,19 @@ logger = logging.getLogger(__name__)
 # Number of feature dimensions
 N_FEATURES = 28  # 7 features × 4 resources
 
+# Archetype → preferred context_len (domain-knowledge heuristic)
+# Used by autoresearch harness for archetype-conditioned config sampling.
+_ARCHETYPE_CONTEXT_BIAS: dict[str, int] = {
+    "low-traffic-blog": 128,
+    "ecommerce-retail": 512,
+    "news-publisher": 384,
+    "b2b-saas": 256,
+    "wp-cron-heavy": 256,
+    "cache-driven": 384,
+    "compute-heavy": 128,
+    "idle-ish": 64,
+}
+
 
 def extract_features(
     history: np.ndarray,

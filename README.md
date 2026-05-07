@@ -17,7 +17,7 @@ Proof-of-concept empirically validating the thesis:
 | M5: Forecast Baselines | ✅ Complete | `m5/baselines` |
 | M6: Headline Experiment | 🚧 In Progress | `m6/headline-experiment` |
 | M7: Latency Budget Sweep | 🚧 In Progress | `m7/latency-sweep` |
-| M8: Cold-Start Experiment | ⏳ Pending | — |
+| M8: Cold-Start Experiment | 🚧 In Progress | `m8/cold-start` |
 | M9: SLA Tier Asymmetry | ⏳ Pending | — |
 | M10: GCP Scale-Out | ⏳ Pending | — |
 
@@ -81,6 +81,7 @@ tsfm-autoresearch/
 │   ├── 02_tsfm_wrapper_validation.py    ✓
 │   ├── m6_headline.py                   (M6 — headline experiment)
 │   ├── m7_latency_sweep.py              (M7 — latency budget sweep)
+│   ├── m8_cold_start.py                 (M8 — cold-start archetype)
 │   ├── 04_cold_start_archetype.py       (M8)
 │   └── 05_sla_tier_asymmetry.py         (M9)
 ├── notebooks/
@@ -186,6 +187,13 @@ Sweeps K ∈ {1, 2, 4, 8, 16, 32} to measure the latency/loss trade-off curve an
 
 ```bash
 uv run python experiments/m7_latency_sweep.py --tenants 50 --timestamps 5
+```
+
+### M8: Cold-Start Experiment
+Tests archetype retrieval from minimal history (30-480 min) to close the gap between cold autoresearch and the oracle. Wires the `archetype_embedding` parameter in `AutoresearchHarness.forecast()` for the first time.
+
+```bash
+uv run python experiments/m8_cold_start.py --tenants 50 --lengths 30,60,120,240,480
 ```
 
 ## Tech Stack
