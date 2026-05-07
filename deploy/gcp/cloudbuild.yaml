@@ -1,0 +1,27 @@
+# M10 GCP Scale-Out — deployment configuration
+#
+# Deploy the forecast service to Cloud Run with GPU (L4).
+# Qdrant migration path: replace FAISS in archetype_store.py with
+# Qdrant Cloud client for horizontal scaling across replicas.
+#
+# Usage:
+#   gcloud builds submit --tag gcr.io/PROJECT/tsfm-autoresearch
+#   gcloud run deploy tsfm-autoresearch \
+#     --image gcr.io/PROJECT/tsfm-autoresearch \
+#     --platform managed \
+#     --region us-central1 \
+#     --memory 16Gi \
+#     --cpu 4 \
+#     --gpu 1 --gpu-type nvidia-l4 \
+#     --concurrency 10 \
+#     --timeout 300 \
+#     --set-env-vars HF_HOME=/app/model_cache
+
+steps:
+  - name: 'gcr.io/cloud-builders/docker'
+    args: ['build', '-t', 'gcr.io/$PROJECT_ID/tsfm-autoresearch', '-f', 'deploy/docker/Dockerfile', '.']
+
+images:
+  - 'gcr.io/$PROJECT_ID/tsfm-autoresearch'
+
+timeout: 1800s

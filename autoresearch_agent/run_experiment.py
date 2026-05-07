@@ -233,6 +233,18 @@ def main() -> None:
         )
         print(f"\nExperiment completed in {time.perf_counter() - t0:.1f}s")
         return
+    elif CURRENT_EXPERIMENT == "09_sla_tier_asymmetry":
+        # M9 SLA asymmetry
+        from experiments.m9_sla_asymmetry import run_sla_asymmetry_experiment
+
+        results = run_sla_asymmetry_experiment(
+            client=client,
+            n_tenants=N_TENANTS,
+            horizon=HORIZON,
+            seed=42,
+        )
+        print(f"\nExperiment completed in {time.perf_counter() - t0:.1f}s")
+        return
     else:
         print(f"Unknown experiment: {CURRENT_EXPERIMENT}")
         return
