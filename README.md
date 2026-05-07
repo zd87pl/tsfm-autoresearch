@@ -79,7 +79,7 @@ tsfm-autoresearch/
 ├── experiments/
 │   ├── 01_workload_characterization.py  ✓
 │   ├── 02_tsfm_wrapper_validation.py    ✓
-│   ├── 02_fixed_vs_autoresearch.py      (M6 → m6_headline.py)
+│   ├── m6_headline.py                   (M6 — headline experiment)
 │   ├── 03_latency_budget_sweep.py       (M7)
 │   ├── 04_cold_start_archetype.py       (M8)
 │   └── 05_sla_tier_asymmetry.py         (M9)

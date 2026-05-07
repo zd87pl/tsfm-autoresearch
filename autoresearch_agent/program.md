@@ -1,7 +1,8 @@
 # autoresearch: TSFM Multi-Tenant Forecasting
 
-This is an adaptation of Karpathy's autoresearch pattern applied to
-multi-tenant time-series forecasting with a frozen TimesFM foundation model.
+This is an adaptation of [Karpathy's autoresearch pattern](https://github.com/karpathy/autoresearch-mlx)
+applied to multi-tenant time-series forecasting with a frozen TimesFM foundation model.
+Original MLX port reference files are preserved in `references/mlx-port/`.
 
 The core thesis: **a per-request autoresearch loop over a frozen TimesFM
 achieves better cost-asymmetric performance than any single fixed
