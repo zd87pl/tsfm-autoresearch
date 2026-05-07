@@ -45,4 +45,4 @@ testpaths = ["tests"]
 addopts = ["-v", "--tb=short"]
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/tsfm_autoresearch", "src/baselines"]
+packages = ["src/tsfm_autoresearch", "src/baselines", "autoresearch_agent"]
