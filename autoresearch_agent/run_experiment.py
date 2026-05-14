@@ -233,6 +233,13 @@ def main() -> None:
         )
         print(f"\nExperiment completed in {time.perf_counter() - t0:.1f}s")
         return
+    elif CURRENT_EXPERIMENT == "04_retrieval_accuracy":
+        # M4 archetype-retrieval accuracy (no TimesFM required)
+        from experiments.m4_retrieval_accuracy import run_retrieval_accuracy
+
+        results = run_retrieval_accuracy(centroid_frac=0.5, seed=42)
+        print(f"\nExperiment completed in {time.perf_counter() - t0:.1f}s")
+        return
     elif CURRENT_EXPERIMENT == "09_sla_tier_asymmetry":
         # M9 SLA asymmetry
         from experiments.m9_sla_asymmetry import run_sla_asymmetry_experiment

@@ -52,6 +52,12 @@ EXPERIMENT_NAME = "03_latency_budget_sweep"
 # K values to sweep
 K_SWEEP = [1, 2, 4, 8, 16, 32]
 
+# Warmup forecast count before timing begins. The first TimesFM call after
+# load (and, with torch_compile=True, the first call at each new batch
+# shape) incurs JIT cost that would inflate p95 for the smallest K and
+# distort the latency-vs-K curve.
+WARMUP_FORECASTS = 3
+
 # Timestamps per tenant (fewer than M6 — each tenant runs 6× K values)
 DEFAULT_TIMESTAMPS = 5
 
@@ -101,7 +107,33 @@ def run_latency_sweep(
     # Per-stage timing for K=8 (the default, most interesting)
     stage_timing_accum: dict[str, list[float]] = {}
 
-    total_evaluations = 0
+    total_paired_rows = 0
+
+    # ── Warmup ────────────────────────────────────────────────────────
+    # Drain JIT / compilation / GPU-context costs before timing. Use the
+    # first usable tenant for warmup at every K value so per-K timing is
+    # comparable from the first recorded row onward.
+    print(f"\nWarming up ({WARMUP_FORECASTS} forecasts per K)...")
+    for tid in tenant_ids:
+        history = load_tenant_data(tid)
+        T = history.shape[0]
+        if T <= MIN_HISTORY + horizon:
+            continue
+        for k in K_SWEEP:
+            warmup_harness = AutoresearchHarness(client, default_K=k, seed=seed)
+            for _ in range(WARMUP_FORECASTS):
+                try:
+                    warmup_harness.forecast(
+                        tenant_id=tid,
+                        history=history[:MIN_HISTORY, :],
+                        horizon=horizon,
+                        sla_tier=sla_tier,
+                        K=k,
+                    )
+                except Exception:
+                    pass
+        break
+    print("  Done.\n")
 
     for tidx, tid in enumerate(tenant_ids):
         history = load_tenant_data(tid)
@@ -125,7 +157,13 @@ def run_latency_sweep(
             if actuals.shape[0] < horizon:
                 continue
 
-            # ── Sweep K values ────────────────────────────────────────
+            # ── Paired sweep across K values ─────────────────────────
+            # Run every K, then commit the row only if ALL K succeed.
+            # This keeps per-K loss/latency lists index-aligned across K
+            # so paired diminishing-returns claims are valid (no drift
+            # when K=32 fails on a row that K=1 happens to succeed on).
+            row: dict[int, dict] = {}
+            ok = True
             for k in K_SWEEP:
                 try:
                     harness = AutoresearchHarness(client, default_K=k, seed=seed)
@@ -136,42 +174,48 @@ def run_latency_sweep(
                         sla_tier=sla_tier,
                         K=k,
                     )
-
-                    forecast = response.final_forecast.point
-                    loss = loss_fn.point_loss(actuals, forecast)
-                    mae = evaluate_mae(actuals, forecast)
-
-                    per_k[k]["losses"].append(loss)
-                    per_k[k]["maes"].append(mae)
-                    per_k[k]["latencies"].append(response.total_latency_ms)
-
-                    # Collect stage timing for K=8
-                    if k == 8 and response.timing_ms:
-                        for stage, ms in response.timing_ms.items():
-                            stage_timing_accum.setdefault(stage, []).append(ms)
-
-                    total_evaluations += 1
-
+                    row[k] = {
+                        "forecast": response.final_forecast.point,
+                        "latency_ms": response.total_latency_ms,
+                        "timing_ms": dict(response.timing_ms) if response.timing_ms else {},
+                    }
                 except Exception as e:
                     from logging import getLogger
                     getLogger(__name__).warning(
                         "K=%d failed on %s @ t=%d: %s", k, tid, t, e,
                     )
-                    continue
+                    ok = False
+                    break
+
+            if not ok:
+                continue
+
+            for k in K_SWEEP:
+                forecast = row[k]["forecast"]
+                loss = loss_fn.point_loss(actuals, forecast)
+                mae = evaluate_mae(actuals, forecast)
+                per_k[k]["losses"].append(loss)
+                per_k[k]["maes"].append(mae)
+                per_k[k]["latencies"].append(row[k]["latency_ms"])
+                if k == 8 and row[k]["timing_ms"]:
+                    for stage, ms in row[k]["timing_ms"].items():
+                        stage_timing_accum.setdefault(stage, []).append(ms)
+            total_paired_rows += 1
 
         if (tidx + 1) % 10 == 0:
             print(f"  Progress: {tidx + 1}/{len(tenant_ids)} tenants "
-                  f"({total_evaluations} evaluations)")
+                  f"({total_paired_rows} paired rows)")
 
     # ── Compute Summary Statistics ─────────────────────────────────────
-    print(f"\n  Total evaluations: {total_evaluations}")
+    print(f"\n  Total paired rows: {total_paired_rows}")
 
     results: dict = {
         "experiment": EXPERIMENT_NAME,
         "n_tenants": n_tenants,
         "horizon": horizon,
         "sla_tier": sla_tier.value,
-        "n_evaluations": total_evaluations,
+        "n_paired_rows": total_paired_rows,
+        "warmup_forecasts": WARMUP_FORECASTS,
         "k_sweep": [],
     }
 
