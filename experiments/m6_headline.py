@@ -38,7 +38,7 @@ from tsfm_autoresearch.autoresearch import AutoresearchHarness
 from tsfm_autoresearch.losses import SLATier, CostAsymmetricLoss
 from tsfm_autoresearch.tsfm_client import ForecastConfig, TSFMClient
 
-from autoresearch_agent.infra import (
+from autoresearch_agent.prepare import (
     DEFAULT_HORIZON,
     DEFAULT_K,
     DEFAULT_N_TENANTS,
@@ -308,7 +308,7 @@ def run_headline_experiment(
     seed: int = 42,
 ) -> dict:
     """Run the full headline experiment."""
-    from autoresearch_agent.infra import load_manifest
+    from autoresearch_agent.prepare import load_manifest
 
     print(f"{'='*70}")
     print(f"  M6 HEADLINE EXPERIMENT: Fixed-Config vs Autoresearch")

@@ -31,7 +31,7 @@ import numpy as np
 
 from tsfm_autoresearch.archetype_store import ArchetypeStore, extract_features
 
-from autoresearch_agent.infra import (
+from autoresearch_agent.prepare import (
     load_manifest,
     load_tenant_data,
     log_result,

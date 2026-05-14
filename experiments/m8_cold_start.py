@@ -35,7 +35,7 @@ from tsfm_autoresearch.losses import SLATier, CostAsymmetricLoss
 from tsfm_autoresearch.tsfm_client import ForecastConfig, TSFMClient
 
 from baselines.fixed_config import FixedConfigTSFM
-from autoresearch_agent.infra import (
+from autoresearch_agent.prepare import (
     DEFAULT_HORIZON,
     DEFAULT_K,
     DEFAULT_N_TENANTS,
