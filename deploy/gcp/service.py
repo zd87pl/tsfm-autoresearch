@@ -17,11 +17,13 @@ Usage:
 
 from __future__ import annotations
 
+import hmac
 import logging
+import os
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, status
 from pydantic import BaseModel, Field
 
 from tsfm_autoresearch.autoresearch import AutoresearchHarness
@@ -29,6 +31,32 @@ from tsfm_autoresearch.losses import SLATier
 from tsfm_autoresearch.tsfm_client import TSFMClient
 
 logger = logging.getLogger(__name__)
+
+
+# ── Auth ─────────────────────────────────────────────────────────────
+# Baseline shared-secret bearer auth. In production this should be
+# layered behind Cloud Run IAM (allow only authenticated invokers) or
+# Cloud Armor; never expose this service publicly without one of those
+# in front of it. The token is loaded from FORECAST_API_TOKEN env var
+# and the service refuses to start if it is missing or empty.
+
+_API_TOKEN = os.environ.get("FORECAST_API_TOKEN", "").strip()
+
+
+def require_bearer_token(authorization: str | None = Header(default=None)) -> None:
+    """Verify the Authorization: Bearer <token> header against the env secret."""
+    if not _API_TOKEN:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="FORECAST_API_TOKEN not configured",
+        )
+    expected = f"Bearer {_API_TOKEN}"
+    if not authorization or not hmac.compare_digest(authorization, expected):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid or missing bearer token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
 # ── Global state (loaded at startup) ─────────────────────────────────
 
@@ -113,7 +141,11 @@ async def health():
     )
 
 
-@app.post("/forecast", response_model=ForecastResponse)
+@app.post(
+    "/forecast",
+    response_model=ForecastResponse,
+    dependencies=[Depends(require_bearer_token)],
+)
 async def forecast(request: ForecastRequest):
     if _harness is None:
         raise HTTPException(status_code=503, detail="Model not loaded yet")

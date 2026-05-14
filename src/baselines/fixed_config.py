@@ -50,6 +50,7 @@ def find_best_fixed_config(
     horizon: int = 12,
     sla_tier: SLATier = SLATier.STANDARD,
     seed: int = 42,
+    exclude_tenant_ids: list[str] | None = None,
 ) -> ForecastConfig:
     """
     Offline grid search to find the single best fixed configuration.
@@ -68,6 +69,9 @@ def find_best_fixed_config(
         horizon: Forecast horizon for evaluation.
         sla_tier: SLA tier for cost-asymmetric scoring.
         seed: RNG seed for tenant sampling.
+        exclude_tenant_ids: Tenant IDs to exclude (the downstream evaluation
+            set). Required for a fair baseline: never tune on tenants that
+            will later score the model.
 
     Returns:
         Best ForecastConfig found by grid search.
@@ -77,11 +81,21 @@ def find_best_fixed_config(
     data_dir = Path(data_dir)
     manifest_path = data_dir / "manifest.csv"
 
-    # Load manifest
+    # Load manifest, dropping the held-out evaluation tenants.
+    excluded = set(exclude_tenant_ids or [])
     manifest: dict[str, str] = {}
     with open(manifest_path) as f:
         for row in csv.DictReader(f):
-            manifest[row["tenant_id"]] = row["archetype"]
+            tid = row["tenant_id"]
+            if tid in excluded:
+                continue
+            manifest[tid] = row["archetype"]
+
+    if not manifest:
+        raise ValueError(
+            "Grid-search tenant pool is empty after excluding evaluation "
+            "tenants. Generate more synthetic tenants or shrink the eval set."
+        )
 
     # Stratified sample
     rng = np.random.default_rng(seed)
@@ -157,6 +171,7 @@ def find_best_fixed_config(
             "all_scores": mean_scores,
             "n_tenants": n_tenants,
             "sla_tier": sla_tier.value,
+            "n_excluded_eval_tenants": len(excluded),
         }, f, indent=2)
 
     return best_config

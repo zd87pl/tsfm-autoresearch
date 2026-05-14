@@ -28,7 +28,7 @@ from collections import Counter
 import numpy as np
 
 from tsfm_autoresearch.autoresearch import AutoresearchHarness
-from tsfm_autoresearch.losses import SLATier
+from tsfm_autoresearch.losses import CostAsymmetricLoss, SLATier
 from tsfm_autoresearch.tsfm_client import TSFMClient
 
 from autoresearch_agent.infra import (
@@ -69,20 +69,30 @@ def run_sla_asymmetry_experiment(
     print(f"  Tiers: {[t.value for t in tiers]}")
     print(f"{'='*70}\n")
 
-    # Per-tier accumulators
+    # Per-tier accumulators (parallel-indexed across paired rows).
     per_tier: dict[str, dict] = {
         t.value: {
-            "forecast_means": [],  # mean forecast value per eval
-            "config_context_lens": [],  # winning context_len per eval
+            "forecast_means": [],
+            "config_context_lens": [],
             "latencies": [],
+            # Direct loss-asymmetry validation: each tier's forecast scored
+            # under EVERY tier's α. If a tier's forecast is the right
+            # response to a particular α, then forecast_premium should
+            # minimize the loss when scored at α=0.90, etc.
+            "loss_under_premium_alpha": [],
+            "loss_under_basic_alpha": [],
+            # Decomposed under/over-prediction error (paired).
+            "under_pred_error": [],
+            "over_pred_error": [],
         }
         for t in tiers
     }
 
-    # Paired comparisons: same (tenant, t) → all three tiers
-    paired_means: dict[str, list[float]] = {t.value: [] for t in tiers}
+    premium_loss_fn = CostAsymmetricLoss(alpha=SLATier.PREMIUM.alpha, per_resource=True)
+    basic_loss_fn = CostAsymmetricLoss(alpha=SLATier.BASIC.alpha, per_resource=True)
 
     total_evals = 0
+    paired_rows = 0
 
     for tidx, tid in enumerate(tenant_ids):
         history = load_tenant_data(tid)
@@ -101,35 +111,56 @@ def run_sla_asymmetry_experiment(
 
         for t in eval_points:
             hist_slice = history[:t, :]
+            actuals = history[t : t + horizon, :]
+            if actuals.shape[0] < horizon:
+                continue
 
+            # Run all tiers; require all three to succeed before recording
+            # the row, so per-tier lists stay paired.
+            row: dict[str, dict] = {}
+            ok = True
             for tier in tiers:
                 try:
                     harness = AutoresearchHarness(client, default_K=K, seed=seed)
                     response = harness.forecast(
-                        tenant_id=tid,
-                        history=hist_slice,
-                        horizon=horizon,
-                        sla_tier=tier,
-                        K=K,
+                        tenant_id=tid, history=hist_slice, horizon=horizon,
+                        sla_tier=tier, K=K,
                     )
-
-                    forecast = response.final_forecast.point
-                    mean_val = float(np.mean(forecast))
-                    ctx = response.winning_config.context_len
-
-                    per_tier[tier.value]["forecast_means"].append(mean_val)
-                    per_tier[tier.value]["config_context_lens"].append(ctx)
-                    per_tier[tier.value]["latencies"].append(
-                        response.total_latency_ms
-                    )
-
-                    total_evals += 1
+                    row[tier.value] = {
+                        "forecast": response.final_forecast.point,
+                        "ctx": response.winning_config.context_len,
+                        "latency": response.total_latency_ms,
+                    }
                 except Exception:
-                    continue
+                    ok = False
+                    break
+
+            if not ok:
+                continue
+
+            paired_rows += 1
+            for tier in tiers:
+                tn = tier.value
+                forecast = row[tn]["forecast"]
+                err = actuals - forecast
+                under = float(np.mean(np.maximum(0, err)))
+                over = float(np.mean(np.maximum(0, -err)))
+                per_tier[tn]["forecast_means"].append(float(np.mean(forecast)))
+                per_tier[tn]["config_context_lens"].append(row[tn]["ctx"])
+                per_tier[tn]["latencies"].append(row[tn]["latency"])
+                per_tier[tn]["under_pred_error"].append(under)
+                per_tier[tn]["over_pred_error"].append(over)
+                per_tier[tn]["loss_under_premium_alpha"].append(
+                    premium_loss_fn.point_loss(actuals, forecast)
+                )
+                per_tier[tn]["loss_under_basic_alpha"].append(
+                    basic_loss_fn.point_loss(actuals, forecast)
+                )
+                total_evals += 1
 
         if (tidx + 1) % 20 == 0:
             print(f"  Progress: {tidx + 1}/{len(tenant_ids)} tenants "
-                  f"({total_evals} evaluations)")
+                  f"({paired_rows} paired rows, {total_evals} forecasts)")
 
     print(f"\n  Total evaluations: {total_evals}")
 
@@ -222,10 +253,53 @@ def run_sla_asymmetry_experiment(
     else:
         print(f"  ✗ Premium ctx >= Basic ctx: FAILED")
 
-    results["monotonicity_checks"] = checks
-    results["all_checks_pass"] = len(checks) == 4
+    # ── Direct loss-asymmetry validation ─────────────────────────────
+    # The thesis claim is about COST-ASYMMETRIC LOSS, not forecast level.
+    # Validate directly: scored under α=0.90 (premium), the premium
+    # forecast should beat the basic forecast (and vice-versa under α=0.65).
+    print(f"\n  Direct loss-asymmetry checks (paired):")
+    direct = {}
+    if (per_tier["premium"]["loss_under_premium_alpha"]
+            and per_tier["basic"]["loss_under_premium_alpha"]):
+        prem_at_prem_alpha = float(
+            np.mean(per_tier["premium"]["loss_under_premium_alpha"])
+        )
+        basic_at_prem_alpha = float(
+            np.mean(per_tier["basic"]["loss_under_premium_alpha"])
+        )
+        prem_at_basic_alpha = float(
+            np.mean(per_tier["premium"]["loss_under_basic_alpha"])
+        )
+        basic_at_basic_alpha = float(
+            np.mean(per_tier["basic"]["loss_under_basic_alpha"])
+        )
+        direct = {
+            "premium_forecast_at_premium_alpha": prem_at_prem_alpha,
+            "basic_forecast_at_premium_alpha": basic_at_prem_alpha,
+            "premium_forecast_at_basic_alpha": prem_at_basic_alpha,
+            "basic_forecast_at_basic_alpha": basic_at_basic_alpha,
+        }
+        if prem_at_prem_alpha < basic_at_prem_alpha:
+            print(f"  ✓ Premium beats basic under α=0.90: "
+                  f"{prem_at_prem_alpha:.6f} < {basic_at_prem_alpha:.6f}")
+            checks.append("premium_wins_at_premium_alpha")
+        else:
+            print(f"  ✗ Premium beats basic under α=0.90: FAILED "
+                  f"({prem_at_prem_alpha:.6f} vs {basic_at_prem_alpha:.6f})")
+        if basic_at_basic_alpha < prem_at_basic_alpha:
+            print(f"  ✓ Basic beats premium under α=0.65: "
+                  f"{basic_at_basic_alpha:.6f} < {prem_at_basic_alpha:.6f}")
+            checks.append("basic_wins_at_basic_alpha")
+        else:
+            print(f"  ✗ Basic beats premium under α=0.65: FAILED "
+                  f"({basic_at_basic_alpha:.6f} vs {prem_at_basic_alpha:.6f})")
 
-    print(f"  {len(checks)}/4 checks passed")
+    results["direct_loss_asymmetry"] = direct
+    results["monotonicity_checks"] = checks
+    expected_total = 6
+    results["all_checks_pass"] = len(checks) == expected_total
+
+    print(f"  {len(checks)}/{expected_total} checks passed")
     print(f"{'='*70}")
 
     # ── Log ─────────────────────────────────────────────────────────
@@ -236,7 +310,7 @@ def run_sla_asymmetry_experiment(
         f"Standard={means.get('standard', 0):.6f} > "
         f"Basic={means.get('basic', 0):.6f}. "
         f"Spread: {spread:.6f}. "
-        f"{len(checks)}/4 monotonicity checks pass."
+        f"{len(checks)}/6 monotonicity + direct-loss checks pass."
     )
     log_result(
         experiment=EXPERIMENT_NAME,

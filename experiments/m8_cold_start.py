@@ -97,12 +97,20 @@ def run_cold_start_experiment(
     print(f"  SLA Tier: {sla_tier.value}")
     print(f"{'='*70}\n")
 
-    print("Building archetype store from synthetic fleet...")
+    # Build the archetype store on tenants DISJOINT from the evaluation
+    # set. Otherwise a cold-start retrieval for tenant X is "looking up" a
+    # centroid that already saw X's full 30-day history — inflating the
+    # gap-to-oracle claim.
+    print("Building archetype store from held-out tenants...")
     t0 = time.perf_counter()
     store = ArchetypeStore()
-    store.build(data_dir="data/synthetic")
+    store.build(
+        data_dir="data/synthetic",
+        exclude_tenants=set(tenant_ids),
+    )
     print(f"  Built in {time.perf_counter() - t0:.1f}s "
-          f"({len(store._centroids)} archetypes)")
+          f"({len(store._centroids)} archetypes, "
+          f"eval tenants excluded: {len(tenant_ids)})")
 
     # Build oracle harness and fixed-config baseline
     oracle_harness = AutoresearchHarness(client, default_K=K, seed=seed)
@@ -110,11 +118,16 @@ def run_cold_start_experiment(
     fixed_tsfm = FixedConfigTSFM(client, fixed_config)
 
     # ── Per-length accumulators ─────────────────────────────────────
-    per_length: dict[int, dict[str, list[float]]] = {
+    # Each strategy stores losses indexed parallel to per_length[h]["pair_keys"]
+    # so per-length, per-tenant comparisons are paired across strategies.
+    per_length: dict[int, dict[str, list]] = {
         h: {
+            "pair_keys": [],
+            "oracle_losses": [],
             "cold_losses": [],
             "archetype_losses": [],
             "fixed_losses": [],
+            "oracle_latencies": [],
             "cold_latencies": [],
             "archetype_latencies": [],
             "fixed_latencies": [],
@@ -123,9 +136,6 @@ def run_cold_start_experiment(
         }
         for h in history_lengths
     }
-
-    oracle_losses: list[float] = []
-    oracle_latencies: list[float] = []
 
     total_evals = 0
 
@@ -139,112 +149,122 @@ def run_cold_start_experiment(
         if T <= min_needed:
             continue
 
-        # ── Oracle: full-history autoresearch ───────────────────────
+        # Sample shared eval points used by every strategy at this tenant.
         eval_candidates = np.arange(min_needed, T - horizon)
         if len(eval_candidates) == 0:
             continue
-
         n_pts = min(timestamps_per_tenant, len(eval_candidates))
-        eval_points = rng.choice(eval_candidates, size=n_pts, replace=False)
-        eval_points.sort()
+        shared_eval_points = rng.choice(eval_candidates, size=n_pts, replace=False)
+        shared_eval_points.sort()
 
-        for t in eval_points:
-            full_hist = history[:t, :]
-            actuals = history[t : t + horizon, :]
-            if actuals.shape[0] < horizon:
-                continue
-
-            try:
-                resp = oracle_harness.forecast(
-                    tenant_id=tid, history=full_hist,
-                    horizon=horizon, sla_tier=sla_tier, K=K,
-                )
-                oracle_losses.append(
-                    loss_fn.point_loss(actuals, resp.final_forecast.point)
-                )
-                oracle_latencies.append(resp.total_latency_ms)
-            except Exception:
-                continue
-
-        # ── Cold-start at increasing history lengths ─────────────────
-        for hist_len in history_lengths:
-            # Use a different eval point: after hist_len, before horizon
-            eval_start = max(hist_len + 100, min_needed)
-            eval_candidates = np.arange(eval_start, T - horizon)
-            if len(eval_candidates) == 0:
-                continue
-
-            # Pick one eval point per length per tenant
-            eval_t = int(rng.choice(eval_candidates))
-
-            short_hist = history[eval_t - hist_len : eval_t, :]
+        for eval_t in shared_eval_points:
+            eval_t = int(eval_t)
             actuals = history[eval_t : eval_t + horizon, :]
-
             if actuals.shape[0] < horizon:
                 continue
 
-            # ── 1. Cold autoresearch (no archetype) ─────────────────
-            try:
-                cold_harness = AutoresearchHarness(client, default_K=K, seed=seed)
-                cold_resp = cold_harness.forecast(
-                    tenant_id=tid, history=short_hist,
-                    horizon=horizon, sla_tier=sla_tier, K=K,
-                    # No archetype_embedding → uniform config sampling
-                )
-                per_length[hist_len]["cold_losses"].append(
-                    loss_fn.point_loss(actuals, cold_resp.final_forecast.point)
-                )
-                per_length[hist_len]["cold_latencies"].append(
-                    cold_resp.total_latency_ms
-                )
-            except Exception:
-                pass
+            # Oracle uses the full prefix at this eval_t.
+            full_hist = history[:eval_t, :]
 
-            # ── 2. Archetype-guided autoresearch ─────────────────────
-            try:
-                # Extract features from cold-start history
-                features = extract_features(short_hist)
+            for hist_len in history_lengths:
+                if eval_t - hist_len < 0:
+                    continue
+                short_hist = history[eval_t - hist_len : eval_t, :]
 
-                # Retrieve archetype
-                arch_name, similarity = store.query_archetype(features)
-                per_length[hist_len]["retrieval_total"] += 1
+                # Run all four strategies; only record the row if every
+                # one succeeds, so per-length lists remain index-aligned.
+                row_results: dict[str, tuple[float, float]] = {}
+                ok = True
+
+                try:
+                    resp = oracle_harness.forecast(
+                        tenant_id=tid, history=full_hist,
+                        horizon=horizon, sla_tier=sla_tier, K=K,
+                    )
+                    row_results["oracle"] = (
+                        loss_fn.point_loss(actuals, resp.final_forecast.point),
+                        resp.total_latency_ms,
+                    )
+                except Exception:
+                    ok = False
+
+                if ok:
+                    try:
+                        cold_harness = AutoresearchHarness(client, default_K=K, seed=seed)
+                        cold_resp = cold_harness.forecast(
+                            tenant_id=tid, history=short_hist,
+                            horizon=horizon, sla_tier=sla_tier, K=K,
+                        )
+                        row_results["cold"] = (
+                            loss_fn.point_loss(actuals, cold_resp.final_forecast.point),
+                            cold_resp.total_latency_ms,
+                        )
+                    except Exception:
+                        ok = False
+
+                arch_name = None
+                if ok:
+                    try:
+                        features = extract_features(short_hist)
+                        arch_name, _ = store.query_archetype(features)
+                        arch_harness = AutoresearchHarness(client, default_K=K, seed=seed)
+                        arch_resp = arch_harness.forecast(
+                            tenant_id=tid, history=short_hist,
+                            horizon=horizon, sla_tier=sla_tier, K=K,
+                            archetype_embedding=arch_name,
+                        )
+                        row_results["archetype"] = (
+                            loss_fn.point_loss(actuals, arch_resp.final_forecast.point),
+                            arch_resp.total_latency_ms,
+                        )
+                    except Exception:
+                        ok = False
+
+                if ok:
+                    try:
+                        fc_forecast = fixed_tsfm.forecast(short_hist, horizon)
+                        row_results["fixed"] = (
+                            loss_fn.point_loss(actuals, fc_forecast),
+                            0.0,
+                        )
+                    except Exception:
+                        ok = False
+
+                if not ok:
+                    continue
+
+                bucket = per_length[hist_len]
+                bucket["pair_keys"].append((tid, eval_t))
+                bucket["oracle_losses"].append(row_results["oracle"][0])
+                bucket["oracle_latencies"].append(row_results["oracle"][1])
+                bucket["cold_losses"].append(row_results["cold"][0])
+                bucket["cold_latencies"].append(row_results["cold"][1])
+                bucket["archetype_losses"].append(row_results["archetype"][0])
+                bucket["archetype_latencies"].append(row_results["archetype"][1])
+                bucket["fixed_losses"].append(row_results["fixed"][0])
+                bucket["fixed_latencies"].append(row_results["fixed"][1])
+                bucket["retrieval_total"] += 1
                 if arch_name == true_archetype:
-                    per_length[hist_len]["retrieval_correct"] += 1
-
-                # Create harness with archetype bias
-                arch_harness = AutoresearchHarness(client, default_K=K, seed=seed)
-                arch_resp = arch_harness.forecast(
-                    tenant_id=tid, history=short_hist,
-                    horizon=horizon, sla_tier=sla_tier, K=K,
-                    archetype_embedding=arch_name,  # triggers context bias
-                )
-                per_length[hist_len]["archetype_losses"].append(
-                    loss_fn.point_loss(actuals, arch_resp.final_forecast.point)
-                )
-                per_length[hist_len]["archetype_latencies"].append(
-                    arch_resp.total_latency_ms
-                )
-            except Exception:
-                pass
-
-            # ── 3. FixedConfigTSFM ───────────────────────────────────
-            try:
-                fc_forecast = fixed_tsfm.forecast(short_hist, horizon)
-                per_length[hist_len]["fixed_losses"].append(
-                    loss_fn.point_loss(actuals, fc_forecast)
-                )
-            except Exception:
-                pass
-
-            total_evals += 1
+                    bucket["retrieval_correct"] += 1
+                total_evals += 1
 
         if (tidx + 1) % 10 == 0:
             print(f"  Progress: {tidx + 1}/{len(tenant_ids)} tenants")
 
     # ── Compute Summary ─────────────────────────────────────────────
     print(f"\n  Total evaluations: {total_evals}")
-    oracle_mean = float(np.mean(oracle_losses)) if oracle_losses else float("inf")
-    print(f"  Oracle loss (full history): {oracle_mean:.6f}")
+
+    # Pool oracle losses across hist_len buckets for an overall mean (each
+    # row-paired oracle measurement appears once per hist_len; report the
+    # per-length means below for the apples-to-apples comparison).
+    overall_oracle = [
+        x for h in history_lengths for x in per_length[h]["oracle_losses"]
+    ]
+    overall_oracle_lat = [
+        x for h in history_lengths for x in per_length[h]["oracle_latencies"]
+    ]
+    oracle_mean = float(np.mean(overall_oracle)) if overall_oracle else float("inf")
+    print(f"  Oracle loss (paired with cold-start, all lengths): {oracle_mean:.6f}")
 
     results: dict = {
         "experiment": EXPERIMENT_NAME,
@@ -253,30 +273,37 @@ def run_cold_start_experiment(
         "sla_tier": sla_tier.value,
         "k": K,
         "oracle_loss": oracle_mean,
-        "oracle_p50_latency_ms": float(np.median(oracle_latencies)) if oracle_latencies else 0.0,
+        "oracle_p50_latency_ms": (
+            float(np.median(overall_oracle_lat)) if overall_oracle_lat else 0.0
+        ),
         "history_lengths": [],
     }
 
-    print(f"\n{'─'*85}")
-    print(f"  {'Min':>5s}  {'Cold':>10s}  {'Archetype':>10s}  "
+    print(f"\n{'─'*92}")
+    print(f"  {'Min':>5s}  {'Oracle':>10s}  {'Cold':>10s}  {'Archetype':>10s}  "
           f"{'Fixed':>10s}  {'Δ Archetype':>12s}  "
           f"{'Gap to Oracle':>14s}  {'Retrieval':>10s}")
-    print(f"  {'─'*5}  {'─'*10}  {'─'*10}  "
+    print(f"  {'─'*5}  {'─'*10}  {'─'*10}  {'─'*10}  "
           f"{'─'*10}  {'─'*12}  "
           f"{'─'*14}  {'─'*10}")
 
     for hist_len in history_lengths:
         data = per_length[hist_len]
+        # Per-length oracle is paired with cold/archetype/fixed at SAME
+        # (tenant, eval_t) rows — this is the apples-to-apples gap-to-oracle.
+        oracle_mean_h = (
+            float(np.mean(data["oracle_losses"])) if data["oracle_losses"] else float("inf")
+        )
         cold_mean = float(np.mean(data["cold_losses"])) if data["cold_losses"] else float("inf")
         arch_mean = float(np.mean(data["archetype_losses"])) if data["archetype_losses"] else float("inf")
         fixed_mean = float(np.mean(data["fixed_losses"])) if data["fixed_losses"] else float("inf")
 
-        # Improvement from archetype vs. cold
+        # Improvement from archetype vs. cold (paired diff, same rows)
         delta = cold_mean - arch_mean
         delta_str = f"{delta:+.6f}" if delta != 0 else "—"
 
-        # Gap to oracle
-        gap = arch_mean - oracle_mean
+        # Gap to oracle (paired: same eval rows used for both)
+        gap = arch_mean - oracle_mean_h
         gap_str = f"{gap:+.6f}" if gap != 0 else "—"
 
         # Retrieval accuracy
@@ -289,6 +316,7 @@ def run_cold_start_experiment(
 
         length_entry = {
             "history_minutes": hist_len,
+            "oracle_loss": oracle_mean_h,
             "cold_loss": cold_mean,
             "archetype_loss": arch_mean,
             "fixed_loss": fixed_mean,
@@ -304,7 +332,7 @@ def run_cold_start_experiment(
         }
         results["history_lengths"].append(length_entry)
 
-        print(f"  {hist_len:>5d}  {cold_mean:>10.6f}  {arch_mean:>10.6f}  "
+        print(f"  {hist_len:>5d}  {oracle_mean_h:>10.6f}  {cold_mean:>10.6f}  {arch_mean:>10.6f}  "
               f"{fixed_mean:>10.6f}  {delta_str:>12s}  "
               f"{gap_str:>14s}  {ret_acc:>10s}")
 

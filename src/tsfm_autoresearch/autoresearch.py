@@ -242,7 +242,16 @@ class AutoresearchHarness:
         if seed is not None:
             request_rng = np.random.default_rng(seed)
         else:
-            seed_hash = hash(f"{tenant_id}:{sla_tier.value}:{history.shape}")
+            # hashlib.blake2b is platform-independent (Python's built-in
+            # hash() is randomized per-interpreter and not reproducible
+            # across hosts); we want the same (tenant, tier, shape) to
+            # produce the same RNG everywhere.
+            import hashlib
+            digest = hashlib.blake2b(
+                f"{tenant_id}:{sla_tier.value}:{history.shape}".encode(),
+                digest_size=8,
+            ).digest()
+            seed_hash = int.from_bytes(digest, "big")
             request_rng = np.random.default_rng(seed_hash & 0x7FFFFFFF)
 
         timing: dict[str, float] = {}

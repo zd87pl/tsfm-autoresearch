@@ -30,3 +30,9 @@ Thumbs.db
 
 # Environment
 .env
+
+# Scratch / migration artifacts
+*.orig
+*.ref
+*.bak
+*~
