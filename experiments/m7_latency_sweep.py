@@ -34,7 +34,7 @@ from tsfm_autoresearch.autoresearch import AutoresearchHarness
 from tsfm_autoresearch.losses import SLATier, CostAsymmetricLoss
 from tsfm_autoresearch.tsfm_client import TSFMClient
 
-from autoresearch_agent.infra import (
+from autoresearch_agent.prepare import (
     DEFAULT_HORIZON,
     DEFAULT_K,
     DEFAULT_N_TENANTS,

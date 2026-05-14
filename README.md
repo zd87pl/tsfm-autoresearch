@@ -28,12 +28,14 @@ Proof-of-concept empirically validating the thesis:
 
 ```
 ┌──────────────────────────────────────────────────┐
-│ OUTER LOOP (karpathy/autoresearch-mlx pattern)   │
+│ OUTER LOOP (karpathy/autoresearch + -mlx layout) │
 │ autoresearch_agent/                              │
-│ ├── program.md      ← Research goals for AI agent│
-│ ├── run_experiment.py  ← Modifiable experiment   │
-│ ├── infra.py        ← Fixed infrastructure       │
-│ └── results.tsv     ← Experiment ledger          │
+│ ├── program.md   ← Research goals for AI agent   │
+│ ├── train.py     ← Modifiable experiment runner  │
+│ ├── prepare.py   ← Fixed infrastructure (data,   │
+│ │                  metrics, ledger writer)       │
+│ ├── results.tsv  ← Experiment ledger             │
+│ └── NOTICE.md    ← Upstream attribution          │
 │                                                   │
 │   Agent: modify → run → evaluate → log → repeat  │
 └──────────────────────┬───────────────────────────┘
@@ -59,11 +61,12 @@ tsfm-autoresearch/
 ├── CLAUDE.md
 ├── README.md
 ├── pyproject.toml                     # uv-managed
-├── autoresearch_agent/               # karpathy-style outer loop
+├── autoresearch_agent/               # karpathy/autoresearch + -mlx layout
 │   ├── program.md                    # Research program
-│   ├── infra.py                      # Fixed infrastructure (read-only)
-│   ├── run_experiment.py             # Modifiable experiment runner
-│   └── results.tsv                   # Experiment results ledger
+│   ├── prepare.py                    # Fixed infrastructure (read-only)
+│   ├── train.py                      # Modifiable experiment runner
+│   ├── results.tsv                   # Experiment results ledger
+│   └── NOTICE.md                     # Upstream attribution
 ├── src/
 │   ├── tsfm_autoresearch/
 │   │   ├── workload_gen.py           # M1: Synthetic workload generator ✓
@@ -77,8 +80,6 @@ tsfm-autoresearch/
 │       ├── naive_seasonal.py         # M5: Seasonal baseline ✓
 │       ├── fixed_config.py           # M5: Fixed TimesFM baseline ✓
 │       └── per_tenant_arima.py       # M5: Per-tenant ARIMA ✓
-├── references/
-│   └── mlx-port/                     # Original karpathy/autoresearch-mlx files
 ├── experiments/
 │   ├── 01_workload_characterization.py  ✓
 │   ├── 02_tsfm_wrapper_validation.py    ✓
@@ -168,7 +169,7 @@ Per-request 6-stage loop: split history → sample K configs → batch forecast 
 - Standard (α=0.75)
 - Basic (α=0.65)
 
-**karpathy-style outer loop:** `autoresearch_agent/` — autonomous experiment management. Agent reads `program.md`, modifies `run_experiment.py`, runs experiments, logs to `results.tsv`, analyzes, repeats.
+**karpathy-style outer loop:** `autoresearch_agent/` — autonomous experiment management. Agent reads `program.md`, modifies `train.py`, runs experiments, logs to `results.tsv`, analyzes, repeats.
 
 ### M4: Archetype Store
 FAISS-backed archetype embeddings. 28 statistical features per tenant, StandardScaler normalization, cosine similarity retrieval. **>90% retrieval accuracy** on held-out tenants with full history.
@@ -185,7 +186,7 @@ Compares FixedConfigTSFM vs AutoresearchHarness on cost-asymmetric loss across t
 
 ```bash
 uv run python experiments/m6_headline.py --tenants 200 --horizon 60 --timestamps 50
-uv run python autoresearch_agent/run_experiment.py  # via outer loop
+uv run python autoresearch_agent/train.py  # via outer loop
 ```
 
 ### M7: Latency Budget Sweep

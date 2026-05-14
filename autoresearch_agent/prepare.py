@@ -1,11 +1,12 @@
 """
 Fixed infrastructure for the TimesFM autoresearch outer loop.
 
-This file is READ-ONLY per the karpathy/autoresearch pattern.
-It provides data loading, evaluation metrics, and fixed constants
-that the experiment runner and autonomous agent rely on.
+This file plays the `prepare.py` role from the canonical
+karpathy/autoresearch (and the trevin-creator/autoresearch-mlx port):
+data loading, evaluation metrics, and fixed constants that the
+experiment runner and the autonomous agent rely on.
 
-Do NOT modify this file. The agent modifies run_experiment.py instead.
+This file is READ-ONLY. The agent modifies `train.py` instead.
 """
 
 from __future__ import annotations

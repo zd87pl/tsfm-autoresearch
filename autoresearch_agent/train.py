@@ -1,14 +1,16 @@
 """
 Experiment runner for the TimesFM autoresearch outer loop.
 
-This is the MODIFIABLE file per the karpathy/autoresearch pattern.
-The autonomous agent modifies this file to try different experiment
-configurations, baselines, and hyperparameters.
+This file plays the `train.py` role from the canonical
+karpathy/autoresearch (and the trevin-creator/autoresearch-mlx port).
+It is the MODIFIABLE half of the pattern: the autonomous agent edits
+this file to try different experiment configurations, baselines, and
+hyperparameters. `prepare.py` (the fixed half) is off-limits.
 
-Usage: uv run python autoresearch_agent/run_experiment.py
+Usage: uv run python autoresearch_agent/train.py
 
 The script:
-  1. Loads synthetic tenant data via infra.py
+  1. Loads synthetic tenant data via prepare.py
   2. Initializes the frozen TimesFM client
   3. Runs the configured experiment(s)
   4. Computes headline metrics (cost-asymmetric loss, MAE, latency)
@@ -30,7 +32,7 @@ from pathlib import Path
 
 import numpy as np
 
-from autoresearch_agent.infra import (
+from autoresearch_agent.prepare import (
     DATA_DIR,
     DEFAULT_HORIZON,
     DEFAULT_K,

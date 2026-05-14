@@ -1,7 +1,16 @@
 # autoresearch: TSFM Multi-Tenant Forecasting
 
-This is an adaptation of Karpathy's autoresearch pattern applied to
-multi-tenant time-series forecasting with a frozen TimesFM foundation model.
+This is an adaptation of the
+[karpathy/autoresearch](https://github.com/karpathy/autoresearch) pattern —
+and its Apple Silicon port
+[trevin-creator/autoresearch-mlx](https://github.com/trevin-creator/autoresearch-mlx) —
+applied to multi-tenant time-series forecasting with a frozen TimesFM
+foundation model.
+
+The canonical file layout (`program.md`, `prepare.py`, `train.py`,
+`results.tsv`) is preserved so that anyone familiar with upstream
+autoresearch / autoresearch-mlx can navigate this directory without
+translation. See `NOTICE.md` for attribution.
 
 The core thesis: **a per-request autoresearch loop over a frozen TimesFM
 achieves better cost-asymmetric performance than any single fixed
@@ -16,9 +25,10 @@ The inner loop (per-request config search) is in `src/tsfm_autoresearch/`.
 ```
 autoresearch_agent/                   ← THIS DIRECTORY (outer loop)
 ├── program.md                        ← Research program (you are here)
-├── run_experiment.py                 ← Experiment runner (MODIFIABLE)
-├── infra.py                          ← Fixed infrastructure (READ-ONLY)
-└── results.tsv                       ← Experiment results ledger
+├── train.py                          ← Experiment runner (MODIFIABLE)
+├── prepare.py                        ← Fixed infrastructure (READ-ONLY)
+├── results.tsv                       ← Experiment results ledger
+└── NOTICE.md                         ← Upstream attribution (karpathy + trevin-creator)
 
 src/tsfm_autoresearch/                ← Inner loop (per-request optimization)
 ├── autoresearch.py                   ← AutoresearchHarness
@@ -44,27 +54,27 @@ Work with the user to:
 1. **Agree on a run tag**: e.g. `m6-v1`, `latency-sweep-1`. The branch `autoresearch/<tag>` must not already exist.
 2. **Create the branch**: `git checkout -b autoresearch/<tag>` from current branch.
 3. **Read the in-scope files**: These are the files you need context on:
-   - `autoresearch_agent/infra.py` — fixed constants, data loading, evaluation harness. **Do not modify.**
-   - `autoresearch_agent/run_experiment.py` — the file you modify. Experiment config, what to run, what metrics to track.
+   - `autoresearch_agent/prepare.py` — fixed constants, data loading, evaluation harness. **Do not modify.**
+   - `autoresearch_agent/train.py` — the file you modify. Experiment config, what to run, what metrics to track.
    - `experiments/*.py` — the experiment scripts themselves. You can change WHICH experiments run and with what parameters.
    - `src/tsfm_autoresearch/` — the inner loop. You can change config search space parameters.
 4. **Verify data exists**: Run `uv run python -m tsfm_autoresearch.workload_gen --tenants 1000 --days 30 --seed 42` if not already generated.
 5. **Verify model loads**: `uv run python -c "from tsfm_autoresearch.tsfm_client import TSFMClient; TSFMClient()"` — should complete without error.
-6. **Initialize results.tsv**: Create with header row. Run `uv run python autoresearch_agent/run_experiment.py` once to establish a baseline.
+6. **Initialize results.tsv**: Create with header row. Run `uv run python autoresearch_agent/train.py` once to establish a baseline.
 7. **Confirm and go**: Once setup looks good, begin experimentation.
 
 ## Experimentation
 
-Each experiment runs for a **fixed time budget** (configurable in infra.py, default: no hard limit — runs until completion). You launch it as: `uv run python autoresearch_agent/run_experiment.py`.
+Each experiment runs for a **fixed time budget** (configurable in prepare.py, default: no hard limit — runs until completion). You launch it as: `uv run python autoresearch_agent/train.py`.
 
 **What you CAN modify:**
-- `run_experiment.py` — which experiment to run, experiment parameters, config search space
+- `train.py` — which experiment to run, experiment parameters, config search space
 - `src/tsfm_autoresearch/autoresearch.py` — the inner loop config sampling strategy
 - `src/tsfm_autoresearch/losses.py` — SLA tier parameters (α values)
 - Experiment scripts under `experiments/` — what baselines to compare, sample sizes, horizon
 
 **What you CANNOT modify:**
-- `autoresearch_agent/infra.py` — data loading, evaluation metrics, fixed constants
+- `autoresearch_agent/prepare.py` — data loading, evaluation metrics, fixed constants
 - `src/tsfm_autoresearch/tsfm_client.py` — the model is FROZEN
 - `src/tsfm_autoresearch/workload_gen.py` — synthetic data is fixed for reproducibility
 
