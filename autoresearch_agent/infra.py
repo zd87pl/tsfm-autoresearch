@@ -10,6 +10,7 @@ Do NOT modify this file. The agent modifies run_experiment.py instead.
 
 from __future__ import annotations
 
+import contextlib
 import csv
 import time
 from pathlib import Path
@@ -17,6 +18,11 @@ from typing import Any
 
 import numpy as np
 import polars as pl
+
+try:
+    import fcntl as _fcntl
+except ImportError:  # non-POSIX
+    _fcntl = None
 
 from tsfm_autoresearch.losses import SLATier, CostAsymmetricLoss
 
@@ -156,13 +162,43 @@ def evaluate_mae(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 # ── Results Logging ────────────────────────────────────────────────────
 
 
-def init_results_tsv(overwrite: bool = False) -> None:
-    """Create results.tsv with header if it doesn't exist."""
-    if RESULTS_PATH.exists() and not overwrite:
+@contextlib.contextmanager
+def _exclusive_lock(file_obj):
+    """Acquire an OS-level exclusive lock on `file_obj` while the block runs.
+
+    Serializes concurrent writers to results.tsv so two outer-loop runs that
+    finish at the same moment don't interleave header creation or row writes.
+    Falls back to a no-op on platforms without fcntl (e.g. Windows): callers
+    on those platforms must serialize externally.
+    """
+    if _fcntl is None:
+        yield
         return
-    with open(RESULTS_PATH, "w", newline="") as f:
-        writer = csv.writer(f, delimiter="\t")
-        writer.writerow(RESULTS_COLUMNS)
+    _fcntl.flock(file_obj.fileno(), _fcntl.LOCK_EX)
+    try:
+        yield
+    finally:
+        _fcntl.flock(file_obj.fileno(), _fcntl.LOCK_UN)
+
+
+def init_results_tsv(overwrite: bool = False) -> None:
+    """Create results.tsv with header if it doesn't exist.
+
+    Uses an exclusive lock so concurrent first-time writers don't both pass
+    the existence check and clobber each other's header rows.
+    """
+    RESULTS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    # Open with "a" so the file is created if missing without truncating
+    # an existing one; under the exclusive lock, decide whether to write
+    # the header based on the actual file size after acquiring the lock.
+    with open(RESULTS_PATH, "a", newline="") as f:
+        with _exclusive_lock(f):
+            if overwrite or f.tell() == 0:
+                if overwrite:
+                    f.seek(0)
+                    f.truncate()
+                writer = csv.writer(f, delimiter="\t")
+                writer.writerow(RESULTS_COLUMNS)
 
 
 def log_result(
@@ -177,7 +213,7 @@ def log_result(
     Log an experiment result to results.tsv.
 
     Args:
-        experiment: Experiment name (e.g. "02_fixed_vs_autoresearch").
+        experiment: Experiment name (e.g. "m6_headline").
         cost_asym_loss: Headline cost-asymmetric loss.
         mae: Mean absolute error (sanity check).
         p50_latency_ms: Median forecast latency.
@@ -201,17 +237,19 @@ def log_result(
     timestamp = datetime.now(timezone.utc).isoformat(timespec="seconds")
 
     with open(RESULTS_PATH, "a", newline="") as f:
-        writer = csv.writer(f, delimiter="\t")
-        writer.writerow([
-            timestamp,
-            commit,
-            experiment,
-            f"{cost_asym_loss:.6f}",
-            f"{mae:.6f}",
-            f"{p50_latency_ms:.1f}",
-            status,
-            description,
-        ])
+        with _exclusive_lock(f):
+            writer = csv.writer(f, delimiter="\t")
+            writer.writerow([
+                timestamp,
+                commit,
+                experiment,
+                f"{cost_asym_loss:.6f}",
+                f"{mae:.6f}",
+                f"{p50_latency_ms:.1f}",
+                status,
+                description,
+            ])
+            f.flush()
 
     print(f"\n✓ Logged to {RESULTS_PATH}: {experiment} | "
           f"loss={cost_asym_loss:.6f} | mae={mae:.6f} | "

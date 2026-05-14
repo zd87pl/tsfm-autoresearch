@@ -24,13 +24,17 @@ src/tsfm_autoresearch/                ← Inner loop (per-request optimization)
 ├── autoresearch.py                   ← AutoresearchHarness
 ├── tsfm_client.py                    ← Frozen TimesFM wrapper
 ├── losses.py                         ← Cost-asymmetric loss functions
-├── workload_gen.py                   ← Synthetic workload generator
+├── archetype_store.py                ← FAISS retrieval for cold start
+└── workload_gen.py                   ← Synthetic workload generator
 
 experiments/                          ← Experiment definitions
-├── 02_fixed_vs_autoresearch.py       ← Headline experiment (M6)
-├── 03_latency_budget_sweep.py        ← Latency sweep (M7)
-├── 04_cold_start_archetype.py        ← Cold-start experiment (M8)
-└── 05_sla_tier_asymmetry.py          ← SLA tier experiment (M9)
+├── 01_workload_characterization.py   ← Sanity-check the generator
+├── 02_tsfm_wrapper_validation.py     ← Sanity-check the frozen model
+├── m4_retrieval_accuracy.py          ← Archetype retrieval accuracy (M4)
+├── m6_headline.py                    ← Headline experiment (M6)
+├── m7_latency_sweep.py               ← Latency sweep (M7)
+├── m8_cold_start.py                  ← Cold-start experiment (M8)
+└── m9_sla_asymmetry.py               ← SLA tier asymmetry (M9)
 ```
 
 ## Setup
@@ -64,13 +68,38 @@ Each experiment runs for a **fixed time budget** (configurable in infra.py, defa
 - `src/tsfm_autoresearch/tsfm_client.py` — the model is FROZEN
 - `src/tsfm_autoresearch/workload_gen.py` — synthetic data is fixed for reproducibility
 
-**The goal: empirically validate the thesis.**
-Specifically:
-1. Autoresearch beats fixed-config TimesFM on cost-asymmetric loss (M6)
-2. The gap widens on archetypes farthest from the global optimum (wp-cron-heavy, cache-driven, idle-ish)
-3. The latency budget (200ms) is achievable at scale (M7, M10)
-4. Cold-start with archetype retrieval closes the gap to oracle (M8)
-5. Different α values produce measurably different allocation behavior (M9)
+## Acceptance criteria
+
+The thesis is considered empirically validated if the following hold on the
+1,000-tenant synthetic fleet. Each criterion is concrete and gateable.
+
+| ID | Criterion | Target | Source |
+|----|-----------|--------|--------|
+| C1 | Paired win-rate of autoresearch vs FixedConfigTSFM on cost-asymmetric loss (standard SLA, α=0.75) | win_rate ≥ 0.55, two-sided binomial p < 0.05, 95% CI lower bound > 0.50 | M6 |
+| C2 | Mean cost-asymmetric loss improvement | ≥ 5% relative reduction vs FixedConfigTSFM | M6 |
+| C3 | Per-archetype win-rate on the three hardest archetypes (wp-cron-heavy, cache-driven, idle-ish) | win_rate ≥ 0.60 each | M6 |
+| C4 | End-to-end latency (autoresearch with K=8) | p95 ≤ 200ms on the target inference host | M7 |
+| C5 | Max K that respects budget | max_k_within_200ms ≥ 8 | M7 |
+| C6 | Archetype retrieval accuracy from full history (held-out tenants) | top-1 accuracy ≥ 0.90 | M4 |
+| C7 | Cold-start retrieval accuracy at 120 min history (held-out tenants) | top-1 accuracy ≥ 0.70 | M4 |
+| C8 | Archetype-guided cold-start closes ≥ 50% of the cold-vs-oracle gap by 120 min history | gap_closure ≥ 0.50 | M8 |
+| C9 | SLA-tier monotonicity (mean forecast values) | premium > standard > basic, all checks pass | M9 |
+| C10 | Direct loss-asymmetry: premium forecast wins at α=0.90; basic forecast wins at α=0.65 | both checks pass | M9 |
+
+A criterion is reported as **PASS** only when the experiment script that owns
+it prints the corresponding metric AND the metric meets the target. Anything
+below target is **FAIL** — investigate; do not paper over.
+
+**Discipline:**
+- Never tune the FixedConfigTSFM grid search on tenants that appear in the
+  evaluation set (m6 passes `exclude_tenant_ids` automatically; do not bypass).
+- Never build the archetype store on tenants that will be queried in the
+  cold-start experiment (m8 passes `exclude_tenants` automatically).
+- Always use the paired evaluation harness (`evaluate_paired` in
+  `experiments/m6_headline.py`) when comparing two forecasters — never zip
+  two independent loss lists.
+- Report binomial CI + p-value for any win-rate claim. Do not report the bare
+  percentage without uncertainty.
 
 **Simplicity criterion**: All else being equal, simpler is better. An approach that achieves similar results with less complexity is preferred.
 
@@ -82,13 +111,13 @@ The experiment runner prints a summary:
 
 ```
 ---
-experiment:        02_fixed_vs_autoresearch
+experiment:        m6_headline
 n_tenants:         200
 cost_asym_loss:    0.0423
 mae:               0.0156
 p50_latency_ms:    1450
 p95_latency_ms:    2100
-win_rate:          0.78
+win_rate:          0.78  [0.71, 0.84]  p=2.1e-08
 ```
 
 ## Logging results
@@ -97,13 +126,17 @@ When an experiment is done, log it to `results.tsv` (tab-separated).
 
 Columns:
 ```
-commit	experiment	cost_asym_loss	mae	p50_latency_ms	status	description
+timestamp	commit	experiment	cost_asym_loss	mae	p50_latency_ms	status	description
 ```
 
-1. git commit hash (short, 7 chars)
-2. experiment name (e.g. "02_fixed_vs_autoresearch")
-3. cost-asymmetric loss (lower is better)
-4. MAE (sanity check)
-5. p50 latency in ms
-6. status: `keep`, `discard`, or `crash`
-7. short description of what this experiment tried
+1. ISO-8601 UTC timestamp (auto-populated by `log_result`)
+2. git commit hash (short, 7 chars)
+3. experiment name (e.g. "m6_headline")
+4. cost-asymmetric loss (lower is better)
+5. MAE (sanity check)
+6. p50 latency in ms
+7. status: `keep`, `discard`, or `crash`
+8. short description of what this experiment tried
+
+The writer takes an OS-level exclusive lock on the ledger, so concurrent
+runs are serialized rather than racing.
